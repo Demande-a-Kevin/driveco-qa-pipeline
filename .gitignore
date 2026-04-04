@@ -1,0 +1,81 @@
+# ============================================================
+# .gitignore — driveco-qa-pipeline
+# ============================================================
+
+# ── Secrets & credentials ────────────────────────────────────
+.env
+.env.local
+.env.*
+!.env.example
+!.env.template
+gdrive_credentials.json
+gdrive_token.json
+token.json
+*_credentials.json
+*_token.json
+service_account.json
+.secrets.baseline
+
+# ── Données générées / exports ────────────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+datas/
+*.xlsx
+*.csv
+*.log
+logs/
+*.pid
+
+# ── Rapports générés ─────────────────────────────────────────
+driveco-qa-reports/
+reports/
+qa-driveco-data/
+archives/
+
+# ── Fichiers d'état locaux ────────────────────────────────────
+last_kpi_extract.txt
+last_call_history_update.txt
+
+# ── Cache Python / Notion ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+/tmp/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# ── Environnements virtuels ───────────────────────────────────
+.venv/
+venv/
+env/
+.python-version
+
+# ── macOS ────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+
+# ── IDE ──────────────────────────────────────────────────────
+.vscode/
+.vscode/*
+!.vscode/extensions.json
+.vscode/settings.json
+.idea/
+*.swp
+
+# ── Cloudflare Wrangler ───────────────────────────────────────
+.wrangler/
+wrangler.toml.local
+
+# ── Divers ────────────────────────────────────────────────────
+*.bak
+*.tmp
+debug_*.py
