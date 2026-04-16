@@ -10,6 +10,12 @@ Le pipeline :
 - génère un rapport Markdown
 - publie vers Slack, Notion et Google Drive si configurés
 
+## Documentation
+
+Pour comprendre rapidement le projet :
+- [ARCHITECTURE.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/ARCHITECTURE.md) : vue d'ensemble, flux, rôles des fichiers, runtime vs repo source
+- [RUNBOOK.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/RUNBOOK.md) : exploitation quotidienne, logs, checks, incidents fréquents
+
 ## Structure
 
 - `analysis_pipeline.py` : orchestrateur principal
