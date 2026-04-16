@@ -3,7 +3,8 @@ Analyste QA Driveco (bornes recharge FR/ES/IT). Analyse appels support, évalue 
 ## Architecture
 - IVR principal → [1]B2C→UCC(L0/L1) [2]B2B→Driveco Care direct [3]Deflector
 - UCC=prestataire externe 24/7 ; Driveco Care=équipe interne L2
-- Ligne 1214611 (UCC Transfer) NON capturée dans les données (angle mort)
+- Ligne 1214611 (UCC Transfer) capturée dans les données : elle mesure la prise en charge Driveco Care après transfert
+- Le scope QA couvre deux périmètres distincts : UCC et Driveco Care
 
 ## Protocoles critiques
 - WARM TRANSFER : UCC doit briefer Driveco (nom+problème+actions) avant transfert. Violation=client répète.

@@ -8,12 +8,35 @@ from datetime import date
 from dotenv import load_dotenv
 
 # Charge .env depuis le répertoire du script
-load_dotenv(Path(__file__).parent / ".env")
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 
 def _split_csv_env(name: str, default: str = "") -> list[str]:
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _resolve_path_env(name: str, default: Path | str) -> Path:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        candidate = Path(default)
+    else:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = BASE_DIR / candidate
+    return candidate.resolve()
+
+
+def _optional_int_env(name: str, default: int | None = None) -> int | None:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else None
 
 # ── Cloudflare ──────────────────────────────────────────────────────────────
 # Les IDs Cloudflare sont des métadonnées internes. On évite de les hardcoder
@@ -41,12 +64,40 @@ MODEL_REPORTING     = "claude-sonnet-4-6"
 
 # ── Ollama (local, Mac mini Kev1n) ───────────────────────────────────────────
 OLLAMA_BASE_URL         = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_FIXED_MODEL      = "llama3.1:8b"
+OLLAMA_FIXED_MODEL      = os.getenv(
+    "OLLAMA_FIXED_MODEL",
+    os.getenv("OLLAMA_MODEL_ANALYSIS") or os.getenv("OLLAMA_MODEL_SCREENING") or "gemma4:latest",
+)
 OLLAMA_MODEL_SCREENING  = OLLAMA_FIXED_MODEL
 OLLAMA_MODEL_ANALYSIS   = OLLAMA_FIXED_MODEL
 OLLAMA_TIMEOUT          = int(os.getenv("OLLAMA_TIMEOUT", "60"))
 OLLAMA_ANALYSIS_TIMEOUT = int(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "3600"))
-OLLAMA_TRANSCRIPT_MAX_CHARS = int(os.getenv("OLLAMA_TRANSCRIPT_MAX_CHARS", "2200"))
+OLLAMA_PRESCREEN_TIMEOUT = int(
+    os.getenv(
+        "OLLAMA_PRESCREEN_TIMEOUT",
+        "180" if OLLAMA_FIXED_MODEL.startswith("gemma4") else "15",
+    )
+)
+OLLAMA_PRESCREEN_BATCH_SIZE = int(
+    os.getenv("OLLAMA_PRESCREEN_BATCH_SIZE", "4" if OLLAMA_FIXED_MODEL.startswith("gemma4") else "8")
+)
+OLLAMA_ANALYSIS_BATCH_SIZE = int(
+    os.getenv("OLLAMA_ANALYSIS_BATCH_SIZE", "3" if OLLAMA_FIXED_MODEL.startswith("gemma4") else "5")
+)
+OLLAMA_TRANSCRIPT_MAX_CHARS = int(
+    os.getenv(
+        "OLLAMA_TRANSCRIPT_MAX_CHARS",
+        "3600" if OLLAMA_FIXED_MODEL.startswith("gemma4") else "2200",
+    )
+)
+OLLAMA_NUM_CTX          = _optional_int_env(
+    "OLLAMA_NUM_CTX",
+    32768 if OLLAMA_FIXED_MODEL.startswith("gemma4") else None,
+)
+OLLAMA_TEMPERATURE      = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
+OLLAMA_TOP_P            = float(os.getenv("OLLAMA_TOP_P", "0.95"))
+OLLAMA_TOP_K            = int(os.getenv("OLLAMA_TOP_K", "64"))
+OLLAMA_ENABLE_THINKING  = os.getenv("OLLAMA_ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_ANTHROPIC_CONSOLIDATION = os.getenv("ENABLE_ANTHROPIC_CONSOLIDATION", "false").strip().lower() in {"1", "true", "yes", "on"}
 # Seuil de risque au-delà duquel Ollama fait l'analyse complète (0-10)
 OLLAMA_RISK_THRESHOLD   = float(os.getenv("OLLAMA_RISK_THRESHOLD", "4.0"))
@@ -83,21 +134,22 @@ KPI_THRESHOLDS = {
 
 # ── Google Drive ─────────────────────────────────────────────────────────────
 GDRIVE_FOLDER_ID        = os.getenv("GDRIVE_FOLDER_ID", "")
-GDRIVE_CREDENTIALS_FILE = os.getenv("GDRIVE_CREDENTIALS_FILE",
-                            str(Path(__file__).parent / "gdrive_credentials.json"))
-GDRIVE_TOKEN_FILE       = os.getenv("GDRIVE_TOKEN_FILE",
-                            str(Path(__file__).parent / "gdrive_token.json"))
+GDRIVE_CREDENTIALS_FILE = str(
+    _resolve_path_env("GDRIVE_CREDENTIALS_FILE", BASE_DIR / "gdrive_credentials.json")
+)
+GDRIVE_TOKEN_FILE       = str(
+    _resolve_path_env("GDRIVE_TOKEN_FILE", BASE_DIR / "gdrive_token.json")
+)
 
 # ── Bornes temporelles d'analyse ────────────────────────────────────────────
 # Ne jamais analyser des données antérieures à cette date
 ANALYSIS_MIN_DATE = date(2026, 3, 1)
 
 # ── Couverture d'analyse ─────────────────────────────────────────────────────
-# % d'appels UCC soumis à l'analyse (pré-screening Ollama puis LLM)
-ANALYSIS_COVERAGE_PCT   = 0.75   # 75% des appels UCC — modulable
+# % d'appels QA soumis à l'analyse (pré-screening Ollama puis LLM)
+ANALYSIS_COVERAGE_PCT   = 0.75   # 75% des appels analysables
 ANALYSIS_BATCH_SIZE     = 10     # Appels par batch (metadata-only ou mixte)
 ANALYSIS_BATCH_SIZE_TX  = 5      # Appels par batch quand transcript inclus
-MAX_TRANSCRIPT_CALLS    = 20     # Max appels pour lesquels on tente le transcript Aircall AI
 TOP_PROBLEMATIC_CALLS   = 5      # Top appels problématiques isolés dans le rapport
 LONG_CALL_THRESHOLD_SECONDS = int(os.getenv("LONG_CALL_THRESHOLD_SECONDS", "900"))
 PEAK_WINDOW_SECONDS         = int(os.getenv("PEAK_WINDOW_SECONDS", "7200"))
@@ -114,12 +166,15 @@ INTERNAL_PHONE_BLACKLIST = {
 
 # ── Outputs ──────────────────────────────────────────────────────────────────
 # Répertoire de sortie repo-local par défaut pour limiter les chemins implicites.
-_DEFAULT_REPORT_DIR = str(Path(__file__).parent / "qa-driveco-data")
-REPORT_OUTPUT_DIR   = Path(os.getenv("REPORT_OUTPUT_DIR", _DEFAULT_REPORT_DIR))
-LOG_DIR             = Path(os.getenv("LOG_DIR", str(REPORT_OUTPUT_DIR / "logs")))
-NOTION_CACHE_PATH   = Path(
-    os.getenv("NOTION_CACHE_PATH", str(REPORT_OUTPUT_DIR / "cache" / "notion_kb_cache.json"))
+_DEFAULT_REPORT_DIR = BASE_DIR / "qa-driveco-data"
+REPORT_OUTPUT_DIR   = _resolve_path_env("REPORT_OUTPUT_DIR", _DEFAULT_REPORT_DIR)
+LOG_DIR             = _resolve_path_env("LOG_DIR", REPORT_OUTPUT_DIR / "logs")
+NOTION_CACHE_PATH   = _resolve_path_env(
+    "NOTION_CACHE_PATH",
+    REPORT_OUTPUT_DIR / "cache" / "notion_kb_cache.json",
 )
+DISABLE_SLACK_NOTIFICATIONS = os.getenv("DISABLE_SLACK_NOTIFICATIONS", "false").strip().lower() in {"1", "true", "yes", "on"}
+DISABLE_EXTERNAL_PUBLISH = os.getenv("DISABLE_EXTERNAL_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # Crée les répertoires si absents
 REPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

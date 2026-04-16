@@ -118,6 +118,10 @@ def _parse_int(val) -> int | None:
 _LINE_NAME_TO_ID: dict[str, int] = {
     "Ligne Assistance Utilisateurs - N° OVH": 785174,
     "Ligne MES/Maintenance - N° OVH": 785175,
+    "DRIVECO - UCC Transfer": 1214611,
+    "NEW - Ligne assistance Utilisateurs - Belgique": 1075934,
+    "NEW - Ligne assistance Utilisateurs - Italy": 1075935,
+    "NEW - Ligne assistance Utilisateurs - Spain": 1075937,
 }
 
 
@@ -360,14 +364,16 @@ def fetch_sample_with_transcripts(calls: list[dict], max_samples: int = 10) -> l
     return enrich_with_transcripts(sample, max_with_transcript=max_samples)
 
 
-def enrich_with_transcripts(calls: list[dict], max_with_transcript: int = 20) -> list[dict]:
+def enrich_with_transcripts(calls: list[dict], max_with_transcript: int | None = None) -> list[dict]:
     """
-    Enrichit les max_with_transcript premiers appels avec leur transcript Aircall AI.
-    Les appels au-delà du quota reçoivent transcript=None (metadata only).
+    Enrichit les appels avec leur transcript Aircall AI.
+    Si max_with_transcript est défini, limite l'enrichissement aux N premiers appels.
+    Sinon, tente un transcript sur tous les appels fournis.
     Transcripts tronqués à 2 500 chars.
     """
+    quota = len(calls) if max_with_transcript is None else max(0, int(max_with_transcript))
     for i, call in enumerate(calls):
-        if i < max_with_transcript:
+        if i < quota:
             raw = fetch_transcript(str(call.get("call_id", "")))
             call["transcript"] = raw[:max(500, config.OLLAMA_TRANSCRIPT_MAX_CHARS)] if raw else None
         else:

@@ -3,8 +3,8 @@
 #
 # Horaires par défaut :
 #   Benchmark        : 01h30 tous les jours
-#   Quotidien        : 06h40 tous les jours (viser publication vers 07h00)
-#   Watchdog daily   : 07h20 tous les jours (rattrapage si rien n'est parti)
+#   Quotidien        : 05h15 tous les jours (viser publication avant 07h00)
+#   Watchdog daily   : 06h45 tous les jours (rattrapage si rien n'est parti)
 #   Hebdomadaire     : 07h15 chaque lundi (semaine précédente)
 #
 # Prérequis :
@@ -27,10 +27,10 @@ LOG_DIR="$PIPELINE_DIR/qa-driveco-data/logs"
 CRON_USER="$(whoami)"
 BENCH_CRON_MINUTE="${BENCH_CRON_MINUTE:-30}"
 BENCH_CRON_HOUR="${BENCH_CRON_HOUR:-1}"
-DAILY_CRON_MINUTE="${DAILY_CRON_MINUTE:-40}"
-DAILY_CRON_HOUR="${DAILY_CRON_HOUR:-6}"
-WATCHDOG_CRON_MINUTE="${WATCHDOG_CRON_MINUTE:-20}"
-WATCHDOG_CRON_HOUR="${WATCHDOG_CRON_HOUR:-7}"
+DAILY_CRON_MINUTE="${DAILY_CRON_MINUTE:-15}"
+DAILY_CRON_HOUR="${DAILY_CRON_HOUR:-5}"
+WATCHDOG_CRON_MINUTE="${WATCHDOG_CRON_MINUTE:-45}"
+WATCHDOG_CRON_HOUR="${WATCHDOG_CRON_HOUR:-6}"
 WEEKLY_CRON_MINUTE="${WEEKLY_CRON_MINUTE:-15}"
 WEEKLY_CRON_HOUR="${WEEKLY_CRON_HOUR:-7}"
 
@@ -69,10 +69,10 @@ WEEKLY_CRON="$WEEKLY_CRON_MINUTE $WEEKLY_CRON_HOUR * * 1 $RUNNER weekly"
 # On retire les entrées existantes du pipeline, puis on réinjecte les nouvelles
 TMP_CRONTAB="$(mktemp)"
 {
-  crontab -l 2>/dev/null | awk '
-    index($0, "/Users/kev1n/Documents/Codex/driveco-qa-pipeline/.venv/bin/python /Users/kev1n/Documents/Codex/driveco-qa-pipeline/analysis_pipeline.py") == 0 &&
-    index($0, "/Users/kev1n/Documents/Codex/driveco-qa-pipeline/run_from_cron.sh") == 0 &&
-    index($0, "/Users/kev1n/Documents/Codex/driveco-qa-pipeline/run_daily_watchdog.sh") == 0
+  crontab -l 2>/dev/null | awk -v repo="$PIPELINE_DIR" '
+    index($0, repo "/.venv/bin/python " repo "/analysis_pipeline.py") == 0 &&
+    index($0, repo "/run_from_cron.sh") == 0 &&
+    index($0, repo "/run_daily_watchdog.sh") == 0
   '
   echo "$BENCH_CRON"
   echo "$DAILY_CRON"

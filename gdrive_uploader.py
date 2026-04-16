@@ -86,6 +86,9 @@ def upload_report(file_path: Path, report_type: str = "daily") -> str | None:
     Upload un rapport Markdown vers Google Drive.
     Retourne l'URL du fichier uploadé, ou None si échec.
     """
+    if config.DISABLE_EXTERNAL_PUBLISH:
+        print("[gdrive] ℹ️  Upload Drive désactivé par config")
+        return None
     if not GDRIVE_AVAILABLE:
         print("[gdrive] ❌ google-api-python-client non installé — skipping Drive upload")
         return None

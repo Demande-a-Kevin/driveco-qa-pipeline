@@ -2,6 +2,7 @@
 report_formatter.py — Formate les résultats JSON du LLM en rapports Markdown.
 """
 from datetime import datetime
+import re
 try:
     from zoneinfo import ZoneInfo
     _PARIS = ZoneInfo("Europe/Paris")
@@ -10,14 +11,19 @@ except ImportError:
     _PARIS = pytz.timezone("Europe/Paris")
 import config
 
-_AIRCALL_BASE = "https://dashboard.aircall.io/calls"
+_AIRCALL_BASE = "https://asset.aircall.io/calls"
+_ISSUE_TYPE_LABELS = {
+    "manque_d_empathie": "Manque d'empathie",
+    "mauvaise_qualification_b2b_b2c": "Mauvaise qualification B2B/B2C",
+    "manque_de_connaissance_du_client_sur_les_conditions_d_heure_gratuite": "Manque de clarté sur les conditions d'heure gratuite",
+}
 
 
 def _aircall_link_md(call_id) -> str:
     """Retourne un lien Markdown Aircall pour un call_id."""
     if not call_id or str(call_id) in ("?", ""):
         return str(call_id or "?")
-    return f"[{call_id}]({_AIRCALL_BASE}/{call_id})"
+    return f"[{call_id}]({_AIRCALL_BASE}/{call_id}/recording/info)"
 
 
 def _icon(value, key: str) -> str:
@@ -53,6 +59,9 @@ def _normalize_issue_text(value) -> str:
     if value is None:
         return ""
     if isinstance(value, dict):
+        issue_type = value.get("type")
+        if issue_type:
+            return _humanize_issue_label(issue_type)
         for key in ("description", "message", "issue", "title", "observed_gap", "missing_section"):
             candidate = value.get(key)
             if candidate:
@@ -62,7 +71,39 @@ def _normalize_issue_text(value) -> str:
     if isinstance(value, list):
         parts = [_normalize_issue_text(item) for item in value]
         return " | ".join([part for part in parts if part])
-    return " ".join(str(value).strip().split())
+    text = " ".join(str(value).strip().split())
+    for pattern in (
+        r"[\"']?(?:commentaire|message|description|observed_gap|issue|title)[\"']?\s*:\s*[\"']([^\"']+)",
+        r"[\"']?(?:type)[\"']?\s*:\s*[\"']([^\"']+)",
+        r"[\"']?(?:critere|critère)[\"']?\s*:\s*[\"']([^\"']+)",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+            break
+    if len(text) < 4 and text.upper() not in {"B2B", "B2C", "UCC", "IVR", "CSAT"}:
+        return ""
+    return _humanize_issue_label(text)
+
+
+def _humanize_issue_label(value) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    normalized_key = "".join(ch.lower() if ch.isalnum() else "_" for ch in text)
+    normalized_key = "_".join(part for part in normalized_key.split("_") if part)
+    if normalized_key in _ISSUE_TYPE_LABELS:
+        return _ISSUE_TYPE_LABELS[normalized_key]
+    cleaned = text.strip("{}[]()'\"")
+    if cleaned.startswith("type:"):
+        cleaned = cleaned.split(":", 1)[1].strip()
+    cleaned = cleaned.replace("_", " ")
+    if cleaned.isupper():
+        cleaned = cleaned.title()
+    cleaned = cleaned.replace("B2b", "B2B").replace("B2c", "B2C").replace("Ivr", "IVR").replace("Ucc", "UCC")
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
 
 
 def _normalize_kb_items(items, section: str) -> list[str]:
@@ -147,8 +188,12 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
             cid = item.get("call_id") or "?"
             link = _aircall_link_md(cid)
             duration = int(item.get("duration_seconds") or 0)
-            phone = item.get("from_number") or "?"
-            lines.append(f"- {link} — {phone} — {duration // 60}min{duration % 60:02d}s")
+            started_at = item.get("call_started_at")
+            try:
+                started_label = datetime.fromtimestamp(int(started_at), tz=_PARIS).strftime("%d/%m %H:%M")
+            except (TypeError, ValueError, OSError):
+                started_label = "date/heure indisponible"
+            lines.append(f"- {link} — {started_label} — {duration // 60}min{duration % 60:02d}s")
         lines.append("")
 
     # Top appels problématiques — mis en avant avant tout le reste

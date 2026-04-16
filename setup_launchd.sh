@@ -2,10 +2,12 @@
 set -euo pipefail
 
 PIPELINE_DIR="$(cd "$(dirname "$0")" && pwd)"
+RUNTIME_DIR="${LAUNCHD_RUNTIME_DIR:-$HOME/Library/Application Support/driveco-qa-pipeline/runtime}"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
-LOG_DIR="$PIPELINE_DIR/qa-driveco-data/logs"
-RUNNER="$PIPELINE_DIR/run_from_cron.sh"
-WATCHDOG="$PIPELINE_DIR/run_daily_watchdog.sh"
+LOG_DIR="$RUNTIME_DIR/qa-driveco-data/logs"
+SYNC_SCRIPT="$PIPELINE_DIR/sync_launchd_runtime.sh"
+RUNNER="$RUNTIME_DIR/run_from_cron.sh"
+WATCHDOG="$RUNTIME_DIR/run_daily_watchdog.sh"
 
 BENCH_LABEL="com.kev1n.driveco.qa.benchmark"
 DAILY_LABEL="com.kev1n.driveco.qa.daily"
@@ -19,15 +21,17 @@ WEEKLY_PLIST="$LAUNCH_AGENTS_DIR/${WEEKLY_LABEL}.plist"
 
 BENCH_HOUR="${BENCH_HOUR:-1}"
 BENCH_MINUTE="${BENCH_MINUTE:-30}"
-DAILY_HOUR="${DAILY_HOUR:-6}"
-DAILY_MINUTE="${DAILY_MINUTE:-40}"
-WATCHDOG_HOUR="${WATCHDOG_HOUR:-7}"
-WATCHDOG_MINUTE="${WATCHDOG_MINUTE:-20}"
+DAILY_HOUR="${DAILY_HOUR:-5}"
+DAILY_MINUTE="${DAILY_MINUTE:-15}"
+WATCHDOG_HOUR="${WATCHDOG_HOUR:-6}"
+WATCHDOG_MINUTE="${WATCHDOG_MINUTE:-45}"
 WEEKLY_HOUR="${WEEKLY_HOUR:-7}"
 WEEKLY_MINUTE="${WEEKLY_MINUTE:-15}"
 WEEKLY_WEEKDAY="${WEEKLY_WEEKDAY:-1}"
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
+chmod +x "$SYNC_SCRIPT"
+"$SYNC_SCRIPT"
 chmod +x "$RUNNER" "$WATCHDOG"
 
 cat > "$BENCH_PLIST" <<EOF
@@ -50,7 +54,7 @@ cat > "$BENCH_PLIST" <<EOF
     <integer>${BENCH_MINUTE}</integer>
   </dict>
   <key>WorkingDirectory</key>
-  <string>${PIPELINE_DIR}</string>
+  <string>${RUNTIME_DIR}</string>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/launchd_benchmark.log</string>
   <key>StandardErrorPath</key>
@@ -83,7 +87,7 @@ cat > "$DAILY_PLIST" <<EOF
     <integer>${DAILY_MINUTE}</integer>
   </dict>
   <key>WorkingDirectory</key>
-  <string>${PIPELINE_DIR}</string>
+  <string>${RUNTIME_DIR}</string>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/launchd_daily.log</string>
   <key>StandardErrorPath</key>
@@ -115,7 +119,7 @@ cat > "$WATCHDOG_PLIST" <<EOF
     <integer>${WATCHDOG_MINUTE}</integer>
   </dict>
   <key>WorkingDirectory</key>
-  <string>${PIPELINE_DIR}</string>
+  <string>${RUNTIME_DIR}</string>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/launchd_daily_watchdog.log</string>
   <key>StandardErrorPath</key>
@@ -150,7 +154,7 @@ cat > "$WEEKLY_PLIST" <<EOF
     <integer>${WEEKLY_MINUTE}</integer>
   </dict>
   <key>WorkingDirectory</key>
-  <string>${PIPELINE_DIR}</string>
+  <string>${RUNTIME_DIR}</string>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/launchd_weekly.log</string>
   <key>StandardErrorPath</key>
@@ -177,6 +181,8 @@ echo "  $BENCH_PLIST"
 echo "  $DAILY_PLIST"
 echo "  $WATCHDOG_PLIST"
 echo "  $WEEKLY_PLIST"
+echo "Runtime launchd :"
+echo "  $RUNTIME_DIR"
 echo ""
 echo "Horaires :"
 echo "  benchmark : ${BENCH_HOUR}:$(printf '%02d' "$BENCH_MINUTE")"

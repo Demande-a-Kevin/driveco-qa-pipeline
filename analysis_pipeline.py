@@ -2,7 +2,7 @@
 analysis_pipeline.py — Orchestrateur principal du pipeline QA Driveco.
 
 Routing LLM :
-  Ollama (local, llama3.1:8b) → pre-screening + batch analyse des appels à risque moyen
+  Ollama (local, Gemma 4)     → pre-screening + batch analyse des appels à risque moyen
   Claude Haiku                → daily consolidation + re-évaluation des appels très problématiques
   Claude Sonnet               → rapport hebdomadaire (consolidation + tendances)
 
@@ -15,6 +15,7 @@ import os
 import json
 import argparse
 import logging
+import math
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -62,7 +63,7 @@ SYSTEM_PROMPT = (Path(__file__).parent / "system_prompt.txt").read_text(encoding
 # Tailles de batch
 BATCH_SIZE      = config.ANALYSIS_BATCH_SIZE_TX   # 5 — batch avec transcripts
 BATCH_SIZE_META = config.ANALYSIS_BATCH_SIZE       # 10 — batch metadata only (Haiku)
-OLLAMA_BATCH_SIZE = 5  # Batch Ollama plus petit pour éviter les timeouts
+OLLAMA_BATCH_SIZE = config.OLLAMA_ANALYSIS_BATCH_SIZE
 KB_EXCERPT_MAX_CHARS = 5000
 KB_EXCERPT_MAX_PAGES = 4
 CLAUDE_BATCH_MAX_TOKENS = 900
@@ -75,7 +76,7 @@ ENABLE_CLAUDE_GLOBAL_FALLBACK = False
 
 # ── Filtrage et sélection des appels ─────────────────────────────────────────
 
-def select_calls_for_analysis(calls: list[dict], coverage_pct: float = None) -> list[dict]:
+def select_calls_for_analysis(calls: list[dict], coverage_pct: float = None, max_calls: int | None = None) -> list[dict]:
     """
     Sélectionne coverage_pct% des appels UCC pour analyse LLM.
     Stratégie : escalades > abandons > courts > longs.
@@ -91,7 +92,11 @@ def select_calls_for_analysis(calls: list[dict], coverage_pct: float = None) -> 
     if n_excluded:
         log.info(f"  Filtre durée < 60s : {n_excluded} appels exclus ({len(eligible)} éligibles)")
 
-    target_n = max(1, int(len(eligible) * coverage_pct))
+    if not eligible:
+        log.info("  Aucun appel analysable après filtre durée")
+        return []
+
+    target_n = min(len(eligible), max(1, math.ceil(len(eligible) * coverage_pct)))
 
     escalations = [c for c in eligible if "escalation" in (c.get("tags") or "").lower()]
     abandoned   = [c for c in eligible if c.get("answered") == "No"]
@@ -114,6 +119,9 @@ def select_calls_for_analysis(calls: list[dict], coverage_pct: float = None) -> 
             unique.append(c)
 
     selected = unique[:target_n]
+    if max_calls is not None and max_calls > 0 and len(selected) > max_calls:
+        log.info(f"  Cap analyse appliqué : {len(selected)} → {max_calls} appels max")
+        selected = selected[:max_calls]
     log.info(f"  Sélection analyse : {len(selected)}/{len(eligible)} appels ({coverage_pct*100:.0f}%) "
              f"[escalades={len(escalations)} abandons={len(abandoned)} courts={len(short)} longs={len(long_calls)}]")
     return selected
@@ -231,7 +239,19 @@ def _normalize_issue_text(value) -> str:
         parts = [_normalize_issue_text(item) for item in value]
         return " | ".join([part for part in parts if part])
     text = str(value).strip()
-    return " ".join(text.split())
+    for pattern in (
+        r"[\"']?(?:commentaire|message|description|observed_gap|issue|title)[\"']?\s*:\s*[\"']([^\"']+)",
+        r"[\"']?(?:type)[\"']?\s*:\s*[\"']([^\"']+)",
+        r"[\"']?(?:critere|critère)[\"']?\s*:\s*[\"']([^\"']+)",
+    ):
+        match = __import__("re").search(pattern, text, flags=__import__("re").IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+            break
+    text = " ".join(text.split())
+    if len(text) < 4 and text.upper() not in {"B2B", "B2C", "UCC", "IVR", "CSAT"}:
+        return ""
+    return text
 
 
 def _iter_issue_items(value) -> list:
@@ -258,22 +278,44 @@ def build_consolidation_summary(metrics: dict, evaluations: list[dict], top_prob
     alert_examples: dict[str, list[str]] = {}
     soft_notes = []
     transcript_usable = 0
+    scope_stats = {
+        "ucc": {
+            "evaluated_calls": 0,
+            "transcript_usable_calls": 0,
+            "soft_notes": [],
+            "kb_counter": Counter(),
+        },
+        "driveco": {
+            "evaluated_calls": 0,
+            "transcript_usable_calls": 0,
+            "soft_notes": [],
+            "kb_counter": Counter(),
+        },
+    }
 
     for ev in evaluations:
         call_id = ev.get("call_id")
         classified_type = ev.get("classified_type") or "unknown"
         kb_status = ev.get("kb_compliance") or "unknown"
         model_used = ev.get("_model") or "claude"
+        quality_scope = call_classifier.get_quality_scope(classified_type)
 
         kb_counter[kb_status] += 1
         type_counter[classified_type] += 1
         model_counter[model_used] += 1
+        if quality_scope in scope_stats:
+            scope_stats[quality_scope]["evaluated_calls"] += 1
+            scope_stats[quality_scope]["kb_counter"][kb_status] += 1
 
         soft_note = (ev.get("soft_skills") or {}).get("note_globale")
         if soft_note is not None:
             try:
-                soft_notes.append(float(soft_note))
+                soft_note_value = float(soft_note)
+                soft_notes.append(soft_note_value)
                 transcript_usable += 1
+                if quality_scope in scope_stats:
+                    scope_stats[quality_scope]["soft_notes"].append(soft_note_value)
+                    scope_stats[quality_scope]["transcript_usable_calls"] += 1
             except (TypeError, ValueError):
                 pass
 
@@ -340,6 +382,20 @@ def build_consolidation_summary(metrics: dict, evaluations: list[dict], top_prob
             "transcript_usable_calls": transcript_usable,
             "transcript_usable_rate_pct": round((transcript_usable / len(evaluations) * 100), 1) if evaluations else 0.0,
         },
+        "scope_breakdown": {
+            scope: {
+                "evaluated_calls": data["evaluated_calls"],
+                "transcript_usable_calls": data["transcript_usable_calls"],
+                "transcript_usable_rate_pct": round(
+                    (data["transcript_usable_calls"] / data["evaluated_calls"] * 100), 1
+                ) if data["evaluated_calls"] else 0.0,
+                "soft_skills_average_note": round(
+                    sum(data["soft_notes"]) / len(data["soft_notes"]), 1
+                ) if data["soft_notes"] else None,
+                "kb_compliance_distribution": dict(data["kb_counter"]),
+            }
+            for scope, data in scope_stats.items()
+        },
         "kpis": metrics,
         "classified_type_distribution": dict(type_counter),
         "kb_compliance_distribution": dict(kb_counter),
@@ -400,34 +456,43 @@ def build_fallback_consolidation(metrics: dict, summary: dict) -> dict:
     evaluated_calls = max(1, int(volume.get("evaluated_calls") or 0))
     transcript_usable_calls = int(volume.get("transcript_usable_calls") or 0)
     kb_dist = summary.get("kb_compliance_distribution", {})
+    scope_breakdown = summary.get("scope_breakdown", {}) or {}
     top_errors = summary.get("top_errors", [])
     top_alerts = summary.get("top_alerts", [])
     top_positive = summary.get("top_positive_signals", [])
     avg_soft_note = summary.get("soft_skills_average_note")
     fallback_kb_gaps, kb_recommendations = _build_fallback_kb_gaps(summary)
 
-    conformes = int(kb_dist.get("conforme") or 0)
-    partiels = int(kb_dist.get("partiel") or 0)
-    non_conformes = int(kb_dist.get("non_conforme") or 0)
-    kb_score = ((conformes + 0.5 * partiels) / evaluated_calls) * 10
-    soft_score = float(avg_soft_note) if avg_soft_note is not None else 5.5
-    abandon_penalty = min(3.0, float(metrics.get("abandon_rate_pct", 0)) / 15.0)
-    non_conformity_penalty = min(3.0, (non_conformes / evaluated_calls) * 5.0)
-    score_low_confidence = transcript_usable_calls <= 0 or avg_soft_note is None
-    if score_low_confidence:
-        ucc_quality_score = None
-        ucc_score_justification = (
-            "n/a — score QA non fiable sur ce run : aucun transcript exploitable ou matière soft skills insuffisante."
-        )
-    else:
-        ucc_quality_score = round(
-            max(0.0, min(10.0, (0.45 * kb_score) + (0.55 * soft_score) - abandon_penalty - non_conformity_penalty)),
+    def _score_scope(scope_key: str, fallback_penalty: float = 0.0) -> tuple[float | None, str]:
+        scope = scope_breakdown.get(scope_key) or {}
+        scope_evaluated = int(scope.get("evaluated_calls") or 0)
+        if scope_evaluated <= 0:
+            return None, "n/a — aucun appel analysé sur ce périmètre."
+
+        scope_transcripts = int(scope.get("transcript_usable_calls") or 0)
+        scope_soft_note = scope.get("soft_skills_average_note")
+        scope_kb = scope.get("kb_compliance_distribution") or {}
+        conformes = int(scope_kb.get("conforme") or 0)
+        partiels = int(scope_kb.get("partiel") or 0)
+        non_conformes = int(scope_kb.get("non_conforme") or 0)
+        kb_score = ((conformes + 0.5 * partiels) / scope_evaluated) * 10
+        soft_score = float(scope_soft_note) if scope_soft_note is not None else 5.5
+        non_conformity_penalty = min(3.0, (non_conformes / scope_evaluated) * 5.0)
+        score_low_confidence = scope_transcripts <= 0 or scope_soft_note is None
+        if score_low_confidence:
+            return None, "n/a — aucun transcript exploitable ou matière soft skills insuffisante."
+        score = round(
+            max(0.0, min(10.0, (0.45 * kb_score) + (0.55 * soft_score) - fallback_penalty - non_conformity_penalty)),
             1,
         )
-        ucc_score_justification = (
-            f"Score de secours basé sur KB ({conformes} conformes / {partiels} partiels / {non_conformes} non conformes) "
-            f"et soft skills moyennes ({soft_score}/10)."
+        return score, (
+            f"Score de secours basé sur {scope_evaluated} appel(s), KB ({conformes} conformes / "
+            f"{partiels} partiels / {non_conformes} non conformes) et soft skills moyennes ({soft_score}/10)."
         )
+
+    abandon_penalty = min(3.0, float(metrics.get("abandon_rate_pct", 0)) / 15.0)
+    ucc_quality_score, ucc_score_justification = _score_scope("ucc", fallback_penalty=abandon_penalty)
+    driveco_care_score, driveco_score_justification = _score_scope("driveco", fallback_penalty=0.0)
 
     fallback_alerts = list(metrics.get("alerts", []))
     for item in top_alerts[:3]:
@@ -444,9 +509,9 @@ def build_fallback_consolidation(metrics: dict, summary: dict) -> dict:
         "kpis": metrics,
         "scores": {
             "ucc_quality_score": ucc_quality_score,
-            "driveco_care_score": None,
+            "driveco_care_score": driveco_care_score,
             "ucc_score_justification": ucc_score_justification,
-            "driveco_score_justification": "n/a — consolidation de secours sans volumétrie dédiée Driveco Care",
+            "driveco_score_justification": driveco_score_justification,
         },
         "top_issues": [
             {
@@ -480,12 +545,25 @@ def run_prescreening(calls: list[dict]) -> dict[str, tuple[float, str]]:
     ollama_up = ollama_client.is_available()
     if not ollama_up:
         log.info("  [prescreening] Ollama non disponible — scoring heuristique pour tous les appels")
+    batch_size = max(1, int(config.OLLAMA_PRESCREEN_BATCH_SIZE))
 
-    for call in calls:
-        cid = call.get("call_id_internal") or call.get("call_id")
-        risk, reason = ollama_client.pre_screen_call(call)
-        scores[cid] = (risk, reason)
-        call["_risk_score"] = risk  # Annote le call pour usage ultérieur
+    if ollama_up:
+        for start in range(0, len(calls), batch_size):
+            batch = calls[start:start + batch_size]
+            batch_scores = ollama_client.pre_screen_batch(batch)
+            for call in batch:
+                cid = call.get("call_id_internal") or call.get("call_id")
+                risk, reason = batch_scores.get(str(cid), ollama_client.pre_screen_call(call))
+                scores[cid] = (risk, reason)
+                call["_risk_score"] = risk
+                call["_risk_reason"] = reason
+    else:
+        for call in calls:
+            cid = call.get("call_id_internal") or call.get("call_id")
+            risk, reason = ollama_client.pre_screen_call(call)
+            scores[cid] = (risk, reason)
+            call["_risk_score"] = risk
+            call["_risk_reason"] = reason
 
     n_high   = sum(1 for r, _ in scores.values() if r >= config.HAIKU_REEVAL_THRESHOLD)
     n_medium = sum(1 for r, _ in scores.values() if config.OLLAMA_RISK_THRESHOLD <= r < config.HAIKU_REEVAL_THRESHOLD)
@@ -864,28 +942,38 @@ def run_daily(target_date: datetime):
         if alert.get("level") == "critical":
             notifier.send_alert(alert["message"], level="critical")
 
-    # Filtre UCC : on n'analyse QA que les appels pertinents (ucc_handled + ucc_transfer_handled + warm_transfer)
+    # Scope QA global : UCC + Driveco Care
     ucc_calls = call_classifier.filter_ucc_calls(calls)
-    log.info(f"  Appels UCC scope QA : {len(ucc_calls)}/{len(calls)}")
+    driveco_calls = call_classifier.filter_driveco_calls(calls)
+    qa_calls = call_classifier.filter_qa_calls(calls)
+    log.info(
+        f"  Appels QA scope : {len(qa_calls)}/{len(calls)} "
+        f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
+    )
 
-    if not ucc_calls:
-        log.warning("  Aucun appel UCC pour ce jour — rapport minimal généré")
+    if not qa_calls:
+        log.warning("  Aucun appel QA pour ce jour — rapport minimal généré")
         analysis = {"kpis": metrics, "scores": {}, "call_evaluations": [], "top_problematic_calls": [],
                     "top_issues": [], "good_practices": [], "alerts": metrics.get("alerts", []),
                     "kb_gaps": {"missing": [], "incomplete": [], "to_revise": []}, "recommendations": []}
         report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
         notifier.save_report(report_md, target_date, mode="daily")
         notifier.send_slack_notification(analysis, mode="daily", date=target_date,
-                                         calls=calls, ucc_calls=ucc_calls)
+                                         calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
         return
 
-    # Sélection 75% des appels UCC (stratifiée)
-    calls_to_analyze = select_calls_for_analysis(ucc_calls, config.ANALYSIS_COVERAGE_PCT)
+    # Sélection 75% des appels QA analysables (stratifiée)
+    calls_to_analyze = select_calls_for_analysis(
+        qa_calls,
+        config.ANALYSIS_COVERAGE_PCT,
+    )
+    eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
     eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+    eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
 
     # Enrichissement transcripts pour les appels prioritaires
     calls_to_analyze = call_fetcher.enrich_with_transcripts(
-        calls_to_analyze, max_with_transcript=config.MAX_TRANSCRIPT_CALLS
+        calls_to_analyze, max_with_transcript=len(calls_to_analyze)
     )
 
     kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
@@ -898,11 +986,17 @@ def run_daily(target_date: datetime):
     )
 
     transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
+    analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
+    analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
     analysis["analysis_meta"] = {
-        "eligible_calls": eligible_ucc_count,
+        "eligible_calls": eligible_qa_count,
+        "eligible_ucc_calls": eligible_ucc_count,
+        "eligible_driveco_calls": eligible_driveco_count,
         "analyzed_calls": len(calls_to_analyze),
+        "analyzed_ucc_calls": analyzed_ucc_count,
+        "analyzed_driveco_calls": analyzed_driveco_count,
         "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
-        "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_ucc_count) * 100), 1),
+        "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
         "transcript_calls": transcripts_count,
         "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
         "llm_usage": analysis.get("llm_usage", {}),
@@ -913,7 +1007,7 @@ def run_daily(target_date: datetime):
     report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
     notifier.save_report(report_md, target_date, mode="daily")
     notifier.send_slack_notification(analysis, mode="daily", date=target_date,
-                                     calls=calls, ucc_calls=ucc_calls)
+                                     calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
     log.info("  ✅ Analyse quotidienne terminée.")
 
 
@@ -948,15 +1042,25 @@ def run_weekly(end_date: datetime):
         daily_metrics[day_str] = metrics_builder.compute_metrics(day_calls) if day_calls else {}
     metrics["daily_breakdown"] = daily_metrics
 
-    # Filtre UCC pour l'analyse QA
+    # Scope QA global pour l'analyse QA
     ucc_calls = call_classifier.filter_ucc_calls(all_calls)
-    log.info(f"  Appels UCC scope QA : {len(ucc_calls)}/{len(all_calls)}")
+    driveco_calls = call_classifier.filter_driveco_calls(all_calls)
+    qa_calls = call_classifier.filter_qa_calls(all_calls)
+    log.info(
+        f"  Appels QA scope : {len(qa_calls)}/{len(all_calls)} "
+        f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
+    )
 
-    # 60% de couverture pour l'hebdo (volume 7j peut être important)
-    calls_to_analyze = select_calls_for_analysis(ucc_calls, coverage_pct=0.60)
+    # 75% de couverture pour l'hebdo, sans plafond dur
+    calls_to_analyze = select_calls_for_analysis(
+        qa_calls,
+        coverage_pct=config.ANALYSIS_COVERAGE_PCT,
+    )
+    eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
     eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+    eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
     calls_to_analyze = call_fetcher.enrich_with_transcripts(
-        calls_to_analyze, max_with_transcript=30
+        calls_to_analyze, max_with_transcript=len(calls_to_analyze)
     )
 
     kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
@@ -969,11 +1073,17 @@ def run_weekly(end_date: datetime):
     )
 
     transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
+    analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
+    analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
     analysis["analysis_meta"] = {
-        "eligible_calls": eligible_ucc_count,
+        "eligible_calls": eligible_qa_count,
+        "eligible_ucc_calls": eligible_ucc_count,
+        "eligible_driveco_calls": eligible_driveco_count,
         "analyzed_calls": len(calls_to_analyze),
-        "target_coverage_pct": 60.0,
-        "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_ucc_count) * 100), 1),
+        "analyzed_ucc_calls": analyzed_ucc_count,
+        "analyzed_driveco_calls": analyzed_driveco_count,
+        "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
+        "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
         "transcript_calls": transcripts_count,
         "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
         "llm_usage": analysis.get("llm_usage", {}),
@@ -982,7 +1092,7 @@ def run_weekly(end_date: datetime):
     report_md = report_formatter.format_weekly_report(start_date, end_date, metrics, analysis)
     notifier.save_report(report_md, end_date, mode="weekly")
     notifier.send_slack_notification(analysis, mode="weekly", date=end_date,
-                                     calls=all_calls, ucc_calls=ucc_calls)
+                                     calls=all_calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
     log.info("  ✅ Analyse hebdomadaire terminée.")
 
 

@@ -59,9 +59,15 @@ def _compute_peak_windows(calls: list[dict]) -> list[dict]:
     return peak_windows[:max(1, int(config.PEAK_WINDOWS_TOP_N))]
 
 
+def _safe_pct(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator * 100, 1)
+
+
 def _compute_long_ucc_calls(calls: list[dict]) -> tuple[int, list[dict]]:
     threshold = max(1, int(config.LONG_CALL_THRESHOLD_SECONDS))
-    ucc_types = {"ucc_handled", "ucc_transfer_handled", "warm_transfer"}
+    ucc_types = {"ucc_handled", "warm_transfer"}
     long_pool = [
         c for c in calls
         if c.get("classified_type") in ucc_types
@@ -76,6 +82,7 @@ def _compute_long_ucc_calls(calls: list[dict]) -> tuple[int, list[dict]]:
             "duration_seconds": call.get("duration_in_call") or 0,
             "from_number": call.get("from_number") or call.get("customer_number") or "?",
             "classified_type": call.get("classified_type") or "",
+            "call_started_at": call.get("call_started_at"),
         })
     return len(long_pool), top_calls
 
@@ -93,7 +100,14 @@ def compute_metrics(calls: list[dict]) -> dict:
     ucc_calls  = [c for c in calls if c.get("classified_type") == "ucc_handled"]
     transfer_line_answered = [c for c in calls if c.get("classified_type") == "ucc_transfer_handled"]
     transfer_line_missed = [c for c in calls if c.get("classified_type") == "ucc_transfer_missed"]
-    peak_windows = _compute_peak_windows(calls)
+    assistance_line_calls = [c for c in calls if c.get("line_id") == config.AIRCALL_ASSISTANCE_LINE_ID]
+    transfer_line_calls = [c for c in calls if c.get("line_id") == config.AIRCALL_UCC_TRANSFER_LINE_ID]
+    assistance_charging_calls = [
+        c for c in assistance_line_calls
+        if "charging assistance" in str(c.get("ivr_branch") or "").strip().lower()
+    ]
+    transfer_line_answered_all = [c for c in transfer_line_calls if c.get("answered") == "Yes"]
+    peak_windows = _compute_peak_windows(assistance_line_calls)
     long_ucc_count, long_ucc_top_calls = _compute_long_ucc_calls(calls)
 
     durations    = [c.get("duration_in_call") or 0 for c in answered]
@@ -137,12 +151,19 @@ def compute_metrics(calls: list[dict]) -> dict:
     return {
         "calls_presented":          total,
         "calls_answered":           len(answered),
-        "escalations_count":        len(escalations),
+        "warm_transfer_count":      len(escalations),
+        "driveco_transfer_count":   len(transfer_line_calls),
+        "escalations_count":        max(len(escalations), len(transfer_line_calls)),
         "overflow_count":           len(overflows),
         "abandoned_count":          len(abandoned),
         "transfer_line_answered_count": len(transfer_line_answered),
         "transfer_line_missed_count": len(transfer_line_missed),
         "transfer_line_total_count": len(transfer_line_answered) + len(transfer_line_missed),
+        "assistance_line_calls_presented": len(assistance_line_calls),
+        "assistance_line_charging_assistance_count": len(assistance_charging_calls),
+        "assistance_line_charging_assistance_pct": _safe_pct(len(assistance_charging_calls), len(assistance_line_calls)),
+        "transfer_line_calls_presented": len(transfer_line_calls),
+        "transfer_line_pickup_rate_pct": _safe_pct(len(transfer_line_answered_all), len(transfer_line_calls)),
         "long_ucc_calls_count": long_ucc_count,
         "long_ucc_calls_top":        long_ucc_top_calls,
         "pickup_rate_pct":          pickup_rate,

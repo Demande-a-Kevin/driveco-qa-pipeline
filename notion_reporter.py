@@ -188,6 +188,9 @@ def save_report_to_notion(report_md: str, date: datetime, mode: str) -> str | No
     Returns:
         URL de la page Notion créée, ou None si échec/token manquant.
     """
+    if config.DISABLE_EXTERNAL_PUBLISH:
+        log.info("[notion_reporter] publication Notion désactivée par config")
+        return None
     if not config.NOTION_API_KEY:
         log.debug("[notion_reporter] NOTION_API_KEY non défini — export ignoré")
         return None

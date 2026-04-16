@@ -9,6 +9,8 @@ UCC_LINE_IDS          = config.UCC_LINE_IDS         # {785174, 1214611}
 BACKUP_LINE_IDS       = config.BACKUP_LINE_IDS       # {785175}
 UCC_TRANSFER_LINE_ID  = config.AIRCALL_UCC_TRANSFER_LINE_ID  # 1214611
 ASSISTANCE_LINE_ID    = config.AIRCALL_ASSISTANCE_LINE_ID    # 785174
+UCC_QA_TYPES          = {"ucc_handled", "warm_transfer"}
+DRIVECO_QA_TYPES      = {"ucc_transfer_handled", "b2b_direct", "driveco_direct"}
 
 
 def classify_call(call: dict) -> str:
@@ -64,9 +66,49 @@ def filter_ucc_calls(calls: list[dict]) -> list[dict]:
     """
     Filtre pour ne garder que les appels pertinents pour l'analyse QA UCC :
     - ucc_handled : appels traités par l'UCC sur la ligne principale
-    - ucc_transfer_handled : appels transférés et traités par Driveco Care
     - warm_transfer : transferts initiés depuis l'UCC (tag escalation)
-    Exclut : maintenance, deflector, b2b_direct (hors scope QA UCC).
+    Exclut : côté Driveco Care, maintenance, deflector, b2b_direct.
     """
-    ucc_types = {"ucc_handled", "ucc_transfer_handled", "warm_transfer"}
-    return [c for c in calls if c.get("classified_type") in ucc_types]
+    return [c for c in calls if c.get("classified_type") in UCC_QA_TYPES]
+
+
+def filter_driveco_calls(calls: list[dict]) -> list[dict]:
+    """
+    Appels QA côté Driveco Care :
+    - ucc_transfer_handled : appels reçus après transfert UCC
+    - b2b_direct / driveco_direct : appels pris directement par Driveco
+    On garde uniquement les appels décrochés, réellement analysables sur transcript.
+    """
+    return [
+        c for c in calls
+        if c.get("classified_type") in DRIVECO_QA_TYPES
+        and c.get("answered") == "Yes"
+    ]
+
+
+def filter_qa_calls(calls: list[dict]) -> list[dict]:
+    """
+    Scope QA global = UCC + Driveco Care, sans doublons.
+    """
+    ordered = filter_ucc_calls(calls) + filter_driveco_calls(calls)
+    seen = set()
+    out = []
+    for call in ordered:
+        call_id = str(call.get("call_id_internal") or call.get("call_id") or "").strip()
+        if call_id and call_id in seen:
+            continue
+        if call_id:
+            seen.add(call_id)
+        out.append(call)
+    return out
+
+
+def get_quality_scope(classified_type: str | None) -> str | None:
+    """
+    Retourne le périmètre QA métier pour un type d'appel.
+    """
+    if classified_type in UCC_QA_TYPES:
+        return "ucc"
+    if classified_type in DRIVECO_QA_TYPES:
+        return "driveco"
+    return None

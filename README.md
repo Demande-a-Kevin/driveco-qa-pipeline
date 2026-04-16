@@ -105,6 +105,8 @@ bash run_daily_test.sh
 
 Sur macOS, utiliser `launchd` de préférence.
 Le `cron` système peut être bloqué par les protections macOS quand le projet vit dans `Documents`.
+`launchd` peut aussi être bloqué si le code exécuté reste directement dans `Documents`.
+Le script `setup_launchd.sh` crée donc maintenant un runtime autonome dans `~/Library/Application Support/driveco-qa-pipeline/runtime`.
 
 Installation recommandée :
 
@@ -112,11 +114,24 @@ Installation recommandée :
 bash setup_launchd.sh
 ```
 
+À chaque changement de code ou de `.env`, resynchroniser le runtime :
+
+```bash
+bash sync_launchd_runtime.sh
+```
+
 Par défaut avec `launchd` :
 - tous les jours à `01:30` : benchmark Ollama sur vrais transcripts
-- tous les jours à `06:40` : run `daily`
-- tous les jours à `07:20` : watchdog `daily`
+- tous les jours à `05:15` : run `daily`
+- tous les jours à `06:45` : watchdog `daily`
 - chaque lundi à `07:15` : run `weekly`
+
+Garde-fous ajoutés :
+- couverture QA à `75%` des appels analysables, sans plafond dur
+- fichier d'état de run dans `qa-driveco-data/state/`
+- alerte Slack si le run quotidien échoue
+- alerte Slack si le run est encore en cours à l'heure du watchdog
+- relance automatique si le run est bloqué ou s'est arrêté avant publication
 
 Horaires surchargables :
 - `BENCH_HOUR`
@@ -127,6 +142,9 @@ Horaires surchargables :
 - `WATCHDOG_MINUTE`
 - `WEEKLY_HOUR`
 - `WEEKLY_MINUTE`
+- `LAUNCHD_RUNTIME_DIR`
+- `OLLAMA_FIXED_MODEL`
+- `OLLAMA_NUM_CTX`
 
 Exemple :
 
@@ -140,8 +158,8 @@ Conservé pour compatibilité, mais non recommandé sur macOS quand le repo est 
 
 Par défaut :
 - tous les jours à `01:30` : benchmark Ollama sur vrais transcripts
-- tous les jours à `06:40` : démarrage du run `daily` pour viser une publication vers `07:00`
-- tous les jours à `07:20` : watchdog `daily` si aucun rapport n'a été produit
+- tous les jours à `05:15` : démarrage du run `daily` pour absorber les runs Gemma 4 plus longs
+- tous les jours à `06:45` : watchdog `daily` si aucun rapport n'a été produit
 - chaque lundi à `07:15` : run `weekly`
 
 Horaires surchargables à l'installation :
@@ -165,6 +183,11 @@ Logs :
 - `qa-driveco-data/logs/cron_daily.log`
 - `qa-driveco-data/logs/cron_weekly.log`
 - `qa-driveco-data/logs/pipeline.log`
+
+Avec `launchd`, les logs réellement utilisés sont dans le runtime :
+- `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily.log`
+- `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily_watchdog.log`
+- `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_daily.log`
 
 Résultat benchmark au réveil :
 - `qa-driveco-data/bench_ollama_latest_summary.md` : résumé lisible le plus récent

@@ -5,6 +5,7 @@ en local ET les uploade vers Google Drive (dossier UCC AircallQuality Analysis).
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+import re
 import requests
 import config
 import gdrive_uploader
@@ -14,10 +15,19 @@ import call_fetcher
 OUTPUT = config.REPORT_OUTPUT_DIR
 
 _SLACK_API_URL = "https://slack.com/api/chat.postMessage"
+_AIRCALL_ASSET_BASE = "https://asset.aircall.io/calls"
+_ISSUE_TYPE_LABELS = {
+    "manque_d_empathie": "Manque d'empathie",
+    "mauvaise_qualification_b2b_b2c": "Mauvaise qualification B2B/B2C",
+    "manque_de_connaissance_du_client_sur_les_conditions_d_heure_gratuite": "Manque de clarté sur les conditions d'heure gratuite",
+}
 
 
 def _post_to_slack(blocks: list[dict], text: str = "") -> bool:
     """Envoie un message Slack via l'API HTTP directe (bot token). Retourne True si succès."""
+    if config.DISABLE_SLACK_NOTIFICATIONS:
+        print("[notifier] ℹ️  Slack désactivé par config — envoi ignoré")
+        return True
     token = config.SLACK_BOT_TOKEN
     if not token:
         print("[notifier] ⚠️  SLACK_BOT_TOKEN non défini — envoi Slack ignoré")
@@ -66,7 +76,7 @@ def _aircall_link(call_id) -> str:
     """Retourne un lien Aircall mrkdwn pour un call_id."""
     if not call_id or str(call_id) in ("?", ""):
         return str(call_id or "?")
-    return f"<https://dashboard.aircall.io/calls/{call_id}|{call_id}>"
+    return f"<{_AIRCALL_ASSET_BASE}/{call_id}/recording/info|{call_id}>"
 
 
 def _kpi_icon(value, key: str) -> str:
@@ -94,6 +104,9 @@ def _normalize_issue_text(value) -> str:
     if value is None:
         return ""
     if isinstance(value, dict):
+        issue_type = value.get("type")
+        if issue_type:
+            return _humanize_issue_label(issue_type)
         for key in ("description", "message", "issue", "title", "observed_gap", "missing_section"):
             candidate = value.get(key)
             if candidate:
@@ -103,7 +116,41 @@ def _normalize_issue_text(value) -> str:
     if isinstance(value, list):
         parts = [_normalize_issue_text(item) for item in value]
         return " | ".join([part for part in parts if part])
-    return " ".join(str(value).strip().split())
+    text = " ".join(str(value).strip().split())
+    for pattern in (
+        r"[\"']?(?:commentaire|message|description|observed_gap|issue|title)[\"']?\s*:\s*[\"']([^\"']+)",
+        r"[\"']?(?:type)[\"']?\s*:\s*[\"']([^\"']+)",
+        r"[\"']?(?:critere|critère)[\"']?\s*:\s*[\"']([^\"']+)",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+            break
+    if len(text) < 4 and text.upper() not in {"B2B", "B2C", "UCC", "IVR", "CSAT"}:
+        return ""
+    return _humanize_issue_label(text)
+
+
+def _humanize_issue_label(value) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    normalized_key = "".join(ch.lower() if ch.isalnum() else "_" for ch in text)
+    normalized_key = "_".join(part for part in normalized_key.split("_") if part)
+    if normalized_key in _ISSUE_TYPE_LABELS:
+        return _ISSUE_TYPE_LABELS[normalized_key]
+
+    cleaned = text.strip("{}[]()'\"")
+    if cleaned.startswith("type:"):
+        cleaned = cleaned.split(":", 1)[1].strip()
+    cleaned = cleaned.replace("_", " ")
+    if cleaned.isupper():
+        cleaned = cleaned.title()
+    cleaned = cleaned.replace("B2b", "B2B").replace("B2c", "B2C").replace("Ivr", "IVR").replace("Ucc", "UCC")
+    cleaned = cleaned.replace("Driveco", "Driveco")
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
 
 
 def _phone_digits(value) -> str:
@@ -208,6 +255,16 @@ def _repeat_call_resolution_stats(calls: list[dict]) -> dict:
     }
 
 
+def _format_call_started_at(call: dict) -> str | None:
+    raw = call.get("call_started_at")
+    if raw in (None, "", 0):
+        return None
+    try:
+        return datetime.fromtimestamp(int(raw)).strftime("%d/%m %H:%M")
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def _best_issue_label(ev: dict | None) -> str | None:
     if not ev:
         return None
@@ -308,7 +365,8 @@ def _format_transfer_summary(call: dict) -> str | None:
 
 def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                        calls: list[dict] = None,
-                       ucc_calls: list[dict] = None) -> list[dict]:
+                       ucc_calls: list[dict] = None,
+                       qa_calls: list[dict] = None) -> list[dict]:
     """Construit le message Slack enrichi avec Block Kit."""
     scores = analysis.get("scores", {})
     kpis   = analysis.get("kpis", {})
@@ -332,8 +390,13 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     abandon  = kpis.get("abandon_rate_pct", 0)
     avg_dur  = kpis.get("avg_duration_seconds", 0)
     escalations = kpis.get("escalations_count", 0)
+    warm_transfers = kpis.get("warm_transfer_count", 0)
     analyzed_calls = meta.get("analyzed_calls")
     eligible_calls = meta.get("eligible_calls")
+    eligible_ucc_calls = meta.get("eligible_ucc_calls")
+    eligible_driveco_calls = meta.get("eligible_driveco_calls")
+    analyzed_ucc_calls = meta.get("analyzed_ucc_calls")
+    analyzed_driveco_calls = meta.get("analyzed_driveco_calls")
     transcript_calls = meta.get("transcript_calls")
     transcript_rate = meta.get("transcript_rate_pct")
     actual_coverage = meta.get("actual_coverage_pct")
@@ -343,6 +406,13 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     transfer_answered = kpis.get("transfer_line_answered_count", 0)
     transfer_missed = kpis.get("transfer_line_missed_count", 0)
     peak_windows = kpis.get("peak_windows", []) or []
+    assistance_presented = kpis.get("assistance_line_calls_presented", 0)
+    assistance_charging_count = kpis.get("assistance_line_charging_assistance_count", 0)
+    assistance_charging_pct = kpis.get("assistance_line_charging_assistance_pct", 0)
+    transfer_presented = kpis.get("transfer_line_calls_presented", 0)
+    transfer_pickup_pct = kpis.get("transfer_line_pickup_rate_pct", 0)
+    assistance_scope_calls = [c for c in (calls or []) if c.get("line_id") == config.AIRCALL_ASSISTANCE_LINE_ID]
+    qa_scope_calls = qa_calls or ucc_calls or []
 
     blocks: list[dict] = [
         # ── Header ──────────────────────────────────────────────────────────
@@ -361,42 +431,31 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*Volume analysé*\n{analyzed_calls if analyzed_calls is not None else 'n/a'} appel(s)"},
-                {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
-                {"type": "mrkdwn", "text": f"*Couverture QA*\n{actual_coverage if actual_coverage is not None else 'n/a'}% / cible {target_coverage if target_coverage is not None else 'n/a'}%"},
-                {"type": "mrkdwn", "text": f"*Éligibles QA*\n{eligible_calls if eligible_calls is not None else 'n/a'} appel(s)"},
+                {"type": "mrkdwn", "text": f"*Appels présentés*\n{total}"},
+                {"type": "mrkdwn", "text": f"*Décrochés*\n{answered} ({pickup}%)"},
+                {"type": "mrkdwn", "text": f"{_kpi_icon(overflow, 'overflow_rate')} *Overflow Aircall*\n{overflow}%"},
+                {"type": "mrkdwn", "text": f"{_kpi_icon(abandon, 'abandon_rate')} *Abandon*\n{abandon}%"},
+                {"type": "mrkdwn", "text": f"*Durée moyenne*\n{_format_duration(avg_dur)}"},
+                {"type": "mrkdwn", "text": f"*Escalades détectées*\n{escalations} (tags UCC : {warm_transfers})"},
             ],
         },
-        # ── KPIs globaux ────────────────────────────────────────────────────
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*Appels présentés* : {total}"},
-                {"type": "mrkdwn", "text": f"*Décrochés* : {answered}"},
-                {"type": "mrkdwn", "text": f"{_kpi_icon(pickup, 'pickup_rate')} *Taux décroché* : {pickup}%"},
-                {"type": "mrkdwn", "text": f"{_kpi_icon(overflow, 'overflow_rate')} *Overflow Aircall* : {overflow}%"},
-                {"type": "mrkdwn", "text": f"{_kpi_icon(abandon, 'abandon_rate')} *Abandon* : {abandon}%"},
-                {"type": "mrkdwn", "text": f"*Durée moy.* : {_format_duration(avg_dur)}  |  *Escalades* : {escalations}"},
+                {"type": "mrkdwn", "text": f"*Ligne assistance 785174*\n{assistance_presented} appel(s) entrants"},
+                {"type": "mrkdwn", "text": f"*Transférés à UCC via IVR charging assistance*\n{assistance_charging_count} appel(s) — {assistance_charging_pct}%"},
+                {"type": "mrkdwn", "text": f"*Ligne UCC transfert 1214611*\n{transfer_presented} appel(s) entrants"},
+                {"type": "mrkdwn", "text": f"*Taux décroché ligne 1214611*\n{transfer_pickup_pct}%"},
+                {"type": "mrkdwn", "text": f"*Éligibles QA*\n{eligible_calls if eligible_calls is not None else 'n/a'} appel(s) (UCC {eligible_ucc_calls if eligible_ucc_calls is not None else 'n/a'} / Driveco {eligible_driveco_calls if eligible_driveco_calls is not None else 'n/a'})"},
+                {"type": "mrkdwn", "text": f"*Analysés / couverture*\n{analyzed_calls if analyzed_calls is not None else 'n/a'} appel(s) — {actual_coverage if actual_coverage is not None else 'n/a'}% / cible {target_coverage if target_coverage is not None else 'n/a'}% (UCC {analyzed_ucc_calls if analyzed_ucc_calls is not None else 'n/a'} / Driveco {analyzed_driveco_calls if analyzed_driveco_calls is not None else 'n/a'})"},
+                {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
             ],
         },
         {"type": "divider"},
     ]
 
-    if transfer_total:
-        transfer_lines = [
-            f"• *Appels arrivés sur UCC Transfer (1214611)* — {transfer_total}",
-            f"• *Décrochés côté Driveco* — {transfer_answered}",
-            f"• *Manqués côté Driveco* — {transfer_missed}",
-            "• *Lecture* — ce bloc reflète la ligne transfert, pas un rapprochement 1:1 garanti avec le timeout UCC",
-        ]
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "*Transferts UCC → Driveco Care :*\n" + "\n".join(transfer_lines)},
-        })
-        blocks.append({"type": "divider"})
-
     # ── Routage IVR ─────────────────────────────────────────────────────────
-    ivr_scope_calls = [c for c in (calls or []) if not _is_maintenance_call(c)]
+    ivr_scope_calls = [c for c in assistance_scope_calls if not _is_maintenance_call(c)]
     if ivr_scope_calls:
         ivr_counts = Counter(
             c.get("ivr_branch")
@@ -411,10 +470,12 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             if c.get("answered") == "No" and not str(c.get("ivr_branch") or "").strip()
         )
         drv_crf_count = sum(1 for c in ivr_scope_calls if _is_drv_crf_ivr(c.get("ivr_branch") or ""))
-        b2b_count = sum(1 for c in ivr_scope_calls if _is_b2b_ivr(c.get("ivr_branch") or ""))
+        b2b_calls = [c for c in ivr_scope_calls if _is_b2b_ivr(c.get("ivr_branch") or "")]
+        b2b_count = len(b2b_calls)
+        b2b_pickup_pct = round(sum(1 for c in b2b_calls if c.get("answered") == "Yes") / max(1, b2b_count) * 100, 1) if b2b_count else 0.0
         ivr_lines = [f"• *Abandons avant choix IVR* — {pre_ivr_abandon} appel(s)"]
         ivr_lines.append(f"• *Formulaire DRV&CRF* — {drv_crf_count} appel(s)")
-        ivr_lines.append(f"• *B2B* — {b2b_count} appel(s)")
+        ivr_lines.append(f"• *B2B* — {b2b_count} appel(s) ({b2b_pickup_pct}% décrochés par Driveco)")
         for branch, cnt in ivr_counts.most_common(3):
             ivr_lines.append(f"• `{branch}` — {cnt} appel(s)")
         blocks.append({
@@ -433,8 +494,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         blocks.append({"type": "divider"})
 
     # ── Clients frustrés (appels répétés) ────────────────────────────────────
-    if calls:
-        repeat_stats = _repeat_call_resolution_stats(calls)
+    if assistance_scope_calls:
+        repeat_stats = _repeat_call_resolution_stats(assistance_scope_calls)
         repeat = repeat_stats["entries"]
         if repeat:
             repeat_lines = "\n".join([
@@ -477,21 +538,19 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             reverse=True,
         )[:5]
         if long_pool:
-            long_lines = [f"Total appels UCC ≥{threshold // 60}min : {len(long_pool)}"]
+            long_lines = []
             for c in long_list:
                 cid  = c.get("call_id_internal") or c.get("call_id") or "?"
                 dur  = c.get("duration_in_call") or 0
-                num  = c.get("from_number") or c.get("customer_number") or "?"
                 mins = f"{dur // 60}min{dur % 60:02d}s"
+                started_at = _format_call_started_at(c) or "date/heure indisponible"
                 ev = _find_evaluation_for_call(c, evaluation_index)
                 reason = _best_call_reason(c, ev)
-                transfer_note = _format_transfer_summary(c)
-                detail = f"{reason} | {transfer_note}" if transfer_note else reason
-                long_lines.append(f"• {_aircall_link(cid)} — `{num}` — {mins} — {detail}")
+                long_lines.append(f"• {_aircall_link(cid)} — {started_at} — {mins} — {reason}")
             blocks.append({
                 "type": "section",
                 "text": {"type": "mrkdwn",
-                         "text": f"*Appels longs UCC (≥{threshold // 60}min) :*\n" + "\n".join(long_lines)},
+                         "text": f"*Appels longs UCC (≥{threshold // 60}min) — total : {len(long_pool)}*\n" + "\n".join(long_lines)},
             })
 
     blocks.append({"type": "divider"})
@@ -510,9 +569,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             errors    = ev.get("errors", [])
             err_short = _normalize_issue_text(errors[0]) if errors else "problème non détaillé"
             kb_ico    = "❌" if ev.get("kb_compliance") == "non_conforme" else "⚠️"
-            call_type = ev.get("classified_type") or "type inconnu"
             source_call = None
-            for pool in (ucc_calls or [], calls or []):
+            for pool in (qa_scope_calls or [], calls or []):
                 source_call = next(
                     (
                         c for c in pool
@@ -527,11 +585,9 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                 agent = _display_agent_name(source_call.get("user_name"))
             duration_seconds = source_call.get("duration_in_call") if source_call else None
             duration_note = _format_duration(duration_seconds) if duration_seconds else None
-            transfer_note = _format_transfer_summary(source_call or {}) if source_call else None
-            suffix = f" | {transfer_note}" if transfer_note else ""
             prefix_bits = [bit for bit in (agent, duration_note) if bit]
             prefix = f" — {' | '.join(prefix_bits)}" if prefix_bits else ""
-            lines_prob.append(f"{kb_ico} *{_aircall_link(cid)}*{prefix}{score_txt} — {call_type} — {err_short}{suffix}")
+            lines_prob.append(f"{kb_ico} *{_aircall_link(cid)}*{prefix}{score_txt} — {err_short}")
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
@@ -611,7 +667,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
 
 def send_slack_notification(analysis: dict, mode: str, date: datetime,
                             calls: list[dict] = None,
-                            ucc_calls: list[dict] = None) -> bool:
+                            ucc_calls: list[dict] = None,
+                            qa_calls: list[dict] = None) -> bool:
     """Envoie le rapport dans #drv_ucc_ops. 1 seul envoi par jour (déduplication flag file)."""
     # Déduplication : on ne poste qu'une fois par jour par mode
     flag_file = OUTPUT / f".slack_sent_{mode}_{date.strftime('%Y-%m-%d')}.flag"
@@ -619,7 +676,7 @@ def send_slack_notification(analysis: dict, mode: str, date: datetime,
         print(f"[notifier] ℹ️  Slack {mode} {date.strftime('%Y-%m-%d')} déjà envoyé — ignoré")
         return True
 
-    blocks   = build_slack_blocks(analysis, mode, date, calls=calls, ucc_calls=ucc_calls)
+    blocks   = build_slack_blocks(analysis, mode, date, calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
     fallback = f"Rapport {mode} Driveco {date.strftime('%d/%m/%Y')}"
     ok = _post_to_slack(blocks, text=fallback)
     if ok:
@@ -652,6 +709,10 @@ def save_report(report_md: str, date: datetime, mode: str) -> Path:
     path = OUTPUT / filename
     path.write_text(report_md, encoding="utf-8")
     print(f"[notifier] 💾 Local → {path}")
+
+    if config.DISABLE_EXTERNAL_PUBLISH:
+        print("[notifier] ℹ️  Publications externes désactivées par config")
+        return path
 
     # Upload Google Drive (silencieux si credentials manquants)
     gdrive_link = gdrive_uploader.upload_report(path, report_type=mode)
