@@ -1,0 +1,36 @@
+# driveco-qa-pipeline
+
+Local QA pipeline for Driveco support calls.
+
+## Summary
+
+The project retrieves call history from a Cloudflare worker, enriches selected calls with Aircall AI transcripts, analyzes them locally with Ollama, then publishes daily and weekly QA reports.
+
+## Main docs
+
+- README.md
+- ARCHITECTURE.md
+- RUNBOOK.md
+- CLAUDE.md
+
+## Main entrypoints
+
+- analysis_pipeline.py
+- call_fetcher.py
+- call_classifier.py
+- ollama_client.py
+- metrics_builder.py
+- report_formatter.py
+
+## Operational note
+
+On macOS, automation does not run directly from the source repository. It runs from a synced runtime under:
+
+- ~/Library/Application Support/driveco-qa-pipeline/runtime
+
+After source changes, resync with:
+
+```bash
+bash sync_launchd_runtime.sh
+bash setup_launchd.sh
+```

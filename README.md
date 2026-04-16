@@ -16,6 +16,12 @@ Pour comprendre rapidement le projet :
 - [ARCHITECTURE.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/ARCHITECTURE.md) : vue d'ensemble, flux, rôles des fichiers, runtime vs repo source
 - [RUNBOOK.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/RUNBOOK.md) : exploitation quotidienne, logs, checks, incidents fréquents
 
+## Fichiers IA
+
+Pour rendre le repo plus lisible par un assistant IA :
+- [CLAUDE.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/CLAUDE.md) : contexte rapide, règles d'intervention, points sensibles du projet
+- [llms.txt](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/llms.txt) : index minimal pour orientation automatique
+
 ## Structure
 
 - `analysis_pipeline.py` : orchestrateur principal
