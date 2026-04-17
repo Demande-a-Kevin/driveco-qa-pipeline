@@ -61,6 +61,6 @@ def compute_weighted_score(scores: dict[str, float | int | None]) -> float | Non
         numeric = float(value)
         weighted_total += numeric * weight
         used_weight += weight
-    if used_weight <= 0:
+    if used_weight < 0.6:
         return None
     return round(weighted_total / used_weight, 1)

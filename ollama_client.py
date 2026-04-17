@@ -149,7 +149,8 @@ def _response_schema(model_class) -> dict:
 def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout: int) -> object:
     attempt_messages = [dict(message) for message in messages]
     last_error = None
-    for attempt in range(3):
+    max_attempts = 2
+    for attempt in range(max_attempts):
         raw = _chat(
             model=config.OLLAMA_MODEL_ANALYSIS,
             messages=attempt_messages,
@@ -162,7 +163,7 @@ def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout:
             return model_class.model_validate(payload)
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            if attempt >= 2:
+            if attempt >= max_attempts - 1:
                 break
             attempt_messages = attempt_messages + [
                 {

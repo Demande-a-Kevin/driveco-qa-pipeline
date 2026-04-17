@@ -62,7 +62,7 @@ Découpage :
 4. remplacer `_parse_json`, `_sanitize_call_evaluation` et la logique équivalente par :
    - cleanup minimal des fences ```json
    - validation stricte
-   - retry ciblé max 2 si champ manquant / type invalide
+   - retry ciblé max 2 tentatives au total si champ manquant / type invalide
 5. refactorer l'analyse Ollama en 2 passes :
    - passe extraction factuelle
    - passe scoring à partir de l'extract structuré
@@ -125,7 +125,7 @@ Découpage :
 7. brancher les sauvegardes dans `analysis_pipeline.py` en mode additif par rapport à D1
 
 Décision de design à figer dans ce lot :
-- créer `daily_kpi_snapshot` directement avec un `agent_id` nullable dès `001_init.sql`
+- créer `daily_kpi_snapshot` avec `agent_id=''` pour les snapshots globaux et une clé `(date, scope, agent_id)`
 - ne remplir la granularité agent qu'au Lot 3
 
 Fichiers touchés :
@@ -335,7 +335,7 @@ Pré-requis :
 - Lot 6 si la VoC doit être visible dès la phase 1 dashboard
 
 Livrables :
-- `db/migrations/002_views.sql`
+- `db/migrations/006_views.sql`
 - rôle `dashboard_reader`
 - doc `DASHBOARD.md`
 - endpoint local `GET /health`
@@ -348,7 +348,7 @@ Découpage :
 5. documenter les dashboards cibles Metabase
 
 Fichiers touchés :
-- `db/migrations/002_views.sql`
+- `db/migrations/006_views.sql`
 - `DASHBOARD.md`
 - `.env.example`
 - `ARCHITECTURE.md`

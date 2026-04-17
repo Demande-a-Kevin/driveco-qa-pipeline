@@ -37,6 +37,29 @@ class PersistenceHelpersTest(unittest.TestCase):
                 )
             )
 
+    def test_execute_delete_calls_supabase(self):
+        mock_query = mock.Mock()
+        mock_query.eq.return_value = mock_query
+        mock_table = mock.Mock()
+        mock_table.delete.return_value = mock_query
+        mock_supa = mock.Mock()
+        mock_supa.table.return_value = mock_table
+
+        with mock.patch("persistence.client", return_value=mock_supa):
+            result = persistence._execute_delete("issues", evaluation_id="eval:1", type="alert")
+
+        self.assertTrue(result)
+        mock_supa.table.assert_called_once_with("issues")
+        mock_table.delete.assert_called_once_with()
+        self.assertEqual(
+            mock_query.eq.call_args_list,
+            [
+                mock.call("evaluation_id", "eval:1"),
+                mock.call("type", "alert"),
+            ],
+        )
+        mock_query.execute.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

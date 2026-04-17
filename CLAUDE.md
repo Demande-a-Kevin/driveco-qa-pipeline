@@ -91,6 +91,7 @@ Useful logs:
 - preserve reporting outputs for Slack and Markdown together
 - preserve the separation between QA agent scoring and client VoC extraction
 - be careful with line mappings and call scopes, especially UCC transfer handling
+- keep `daily_kpi_snapshot.agent_id = ''` for global snapshots when `scope = 'global'`
 - never commit secrets or local credential files
 
 ## External dependency

@@ -175,6 +175,15 @@ def _execute_delete(table: str, **filters) -> bool:
     supa = client()
     if supa is None:
         return False
+    try:
+        query = supa.table(table).delete()
+        for key, value in filters.items():
+            query = query.eq(key, value)
+        query.execute()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[persistence] delete %s échoué: %s", table, exc)
+        return False
 
 
 def _call_rgpd_opt_out(call: dict) -> bool:
@@ -185,15 +194,6 @@ def _call_rgpd_opt_out(call: dict) -> bool:
         if str(value or "").strip().lower() in {"1", "true", "yes", "oui"}:
             return True
     return False
-    try:
-        query = supa.table(table).delete()
-        for key, value in filters.items():
-            query = query.eq(key, value)
-        query.execute()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[persistence] delete %s échoué: %s", table, exc)
-        return False
 
 
 def _execute_select(table: str, columns: str = "*", limit: int | None = None, order: tuple[str, bool] | None = None, **filters) -> list[dict]:
@@ -291,10 +291,6 @@ def save_transcript(call: dict) -> bool:
 
 def _soft_skill_rows(evaluation_id: str, evaluation: dict) -> list[dict]:
     criteria_scores = evaluation.get("criteria_scores") or {}
-    improvement_items = evaluation.get("improvement_items") or []
-    first_citation = None
-    if improvement_items:
-        first_citation = improvement_items[0].get("citation")
     rows = []
     for criterion in rubric.rubric_criteria():
         key = criterion["key"]
@@ -304,7 +300,7 @@ def _soft_skill_rows(evaluation_id: str, evaluation: dict) -> list[dict]:
                 "criterion": key,
                 "score": criteria_scores.get(key),
                 "weight": float(criterion["weight"]),
-                "citation": first_citation,
+                "citation": None,
             }
         )
     return rows

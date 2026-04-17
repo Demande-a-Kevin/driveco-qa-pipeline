@@ -137,7 +137,7 @@ Sorties possibles :
 - [db/migrations/001_init.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/001_init.sql)
 - [db/migrations/004_metrics_agent.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/004_metrics_agent.sql)
 - [db/migrations/005_reliability.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/005_reliability.sql)
-- [db/migrations/002_views.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/002_views.sql)
+- [db/migrations/006_views.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/006_views.sql)
 - [db/migrations/003_voc.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/003_voc.sql)
 - [persistence.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/persistence.py)
 - [voc_taxonomy.yaml](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.yaml)

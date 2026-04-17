@@ -60,7 +60,7 @@ Fichiers de référence :
 Migrations SQL à appliquer :
 - `db/migrations/004_metrics_agent.sql`
 - `db/migrations/005_reliability.sql`
-- `db/migrations/002_views.sql`
+- `db/migrations/006_views.sql`
 
 ### Test de connectivité
 

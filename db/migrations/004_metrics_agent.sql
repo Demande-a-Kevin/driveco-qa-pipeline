@@ -1,3 +1,4 @@
+-- Convention: agent_id = '' représente le snapshot global quand scope = 'global'.
 alter table public.daily_kpi_snapshot
     add column if not exists agent_id text not null default '',
     add column if not exists kb_compliance_rate numeric(5,1),

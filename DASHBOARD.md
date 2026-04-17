@@ -12,7 +12,7 @@
 - `db/migrations/003_voc.sql`
 - `db/migrations/004_metrics_agent.sql`
 - `db/migrations/005_reliability.sql`
-- `db/migrations/002_views.sql`
+- `db/migrations/006_views.sql`
 
 ## Variables utiles
 
