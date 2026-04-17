@@ -1055,6 +1055,7 @@ def _persist_daily_snapshot(target_date: datetime, metrics: dict, analysis: dict
     enriched_metrics["avg_soft_score"] = _avg_soft_score(evaluations)
     enriched_metrics["kb_compliance_rate_pct"] = metrics_builder.kb_compliance_rate(evaluations)
     enriched_metrics["warm_transfer_success_rate_pct"] = metrics_builder.warm_transfer_success_rate(total_calls)
+    enriched_metrics["fcr_rate_pct"] = metrics_builder.first_call_resolution_rate(evaluations)
     enriched_metrics["coverage_pct"] = (analysis.get("analysis_meta") or {}).get("actual_coverage_pct")
     history = [
         row for row in persistence.fetch_daily_snapshots("global", days=14, agent_id="")
@@ -1106,6 +1107,7 @@ def _persist_daily_snapshot(target_date: datetime, metrics: dict, analysis: dict
     analysis["agent_snapshots"] = agent_snapshots
     analysis["anomalies"] = anomalies
     analysis["kb_gap_clusters"] = kb_gap_clusters
+    analysis["snapshot_metrics"] = enriched_metrics
 
 
 def _run_shadow_evaluations(target_date: datetime, calls_to_analyze: list[dict], analysis: dict, kb_summary: str) -> list[dict]:
@@ -1381,6 +1383,11 @@ def run_weekly(end_date: datetime):
             "transcript_calls": transcripts_count,
             "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
             "llm_usage": analysis.get("llm_usage", {}),
+        }
+        analysis["snapshot_metrics"] = {
+            "fcr_rate_pct": metrics_builder.first_call_resolution_rate(analysis.get("call_evaluations", [])),
+            "kb_compliance_rate_pct": metrics_builder.kb_compliance_rate(analysis.get("call_evaluations", [])),
+            "avg_soft_score": _avg_soft_score(analysis.get("call_evaluations", [])),
         }
 
         persistence.persist_evaluations(calls_to_analyze, analysis.get("call_evaluations", []))

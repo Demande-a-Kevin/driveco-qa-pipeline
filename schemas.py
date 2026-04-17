@@ -18,6 +18,7 @@ VoCSentiment = Literal["très_négatif", "négatif", "neutre", "positif", "très
 VoCEmotion = Literal["frustration", "colère", "résignation", "soulagement", "satisfaction", "confusion", "inquiétude"]
 SatisfactionSignal = Literal["positif", "neutre", "négatif", "mixte"]
 ChurnRiskSignal = Literal["aucun", "faible", "modéré", "élevé"]
+ResolutionStatus = Literal["resolved", "escalated", "pending", "unresolved", "callback_scheduled"]
 _CLIP_EVENTS = 0
 
 
@@ -136,6 +137,7 @@ class VoCStructuredItem(BaseModel):
 
 class TopicMention(VoCStructuredItem):
     topic_code: str = Field(min_length=2, max_length=80)
+    product_area: str = Field(default="other", max_length=40)
     sentiment: VoCSentiment
     severity: int = Field(ge=1, le=5)
     needs_taxonomy_review: bool = False
@@ -150,6 +152,7 @@ class TopicMention(VoCStructuredItem):
     def _set_topic_review(self):
         code, review = voc_taxonomy.normalize_taxonomy_code("topics", self.topic_code)
         self.topic_code = code
+        self.product_area = _clip(voc_taxonomy.product_area_for_topic(code), 40) or "other"
         self.needs_taxonomy_review = bool(self.needs_taxonomy_review or review)
         return self
 
@@ -249,8 +252,10 @@ class VoCExtract(BaseModel):
     satisfaction_signal: SatisfactionSignal
     churn_risk_signal: ChurnRiskSignal
     expansion_signal: bool = False
+    resolution_status: ResolutionStatus = "pending"
     competitor_mentions: list[CompetitorMention] = Field(default_factory=list)
     verbatim_quotes: list[Quote] = Field(default_factory=list, max_length=5)
+    best_practice_moments: list[Quote] = Field(default_factory=list, max_length=3)
     unmet_needs: list[str] = Field(default_factory=list)
     product_ideas: list[str] = Field(default_factory=list)
     taxonomy_version: str = Field(default_factory=voc_taxonomy.taxonomy_version)
@@ -315,6 +320,7 @@ class FactualExtract(BaseModel):
     alerts: list[AlertItem] = Field(default_factory=list)
     procedural_steps_followed: list[str] = Field(default_factory=list)
     emotional_signals: list[str] = Field(default_factory=list)
+    resolution_status: ResolutionStatus = "pending"
 
     @field_validator("call_id", "classified_type", mode="before")
     @classmethod
@@ -406,6 +412,7 @@ class CallEvaluation(BaseModel):
     duration_seconds: int = Field(ge=0)
     kb_article_applicable: str | None = Field(default=None, max_length=240)
     customer_call_reason: str | None = Field(default=None, max_length=120)
+    resolution_status: ResolutionStatus = "pending"
     kb_compliance: KBComplianceStatus
     positives: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -517,6 +524,16 @@ def build_call_evaluation(
     score_global = rubric.compute_weighted_score(scorecard.score_map())
     if score_global is not None and dropped_improvements:
         score_global = max(0.0, round(score_global - (0.2 * dropped_improvements), 1))
+    if validated_voc is not None and score_global is not None and score_global < 8:
+        if validated_voc.best_practice_moments:
+            warnings.append("best_practice_moments ignorés car score global < 8")
+        validated_voc = VoCExtract.model_validate(
+            {
+                **validated_voc.model_dump(),
+                "best_practice_moments": [],
+                "validation_warnings": list(validated_voc.validation_warnings) + warnings,
+            }
+        )
 
     soft_skills = SoftSkillScore(
         accueil=scorecard.accueil,
@@ -537,6 +554,7 @@ def build_call_evaluation(
         duration_seconds=int(call.get("duration_in_call") or call.get("duration_seconds") or 0),
         kb_article_applicable=factual_extract.kb_compliance.article,
         customer_call_reason=factual_extract.customer_call_reason,
+        resolution_status=factual_extract.resolution_status,
         kb_compliance=factual_extract.kb_compliance.status,
         positives=[item.text for item in valid_positives],
         errors=[item.text for item in valid_improvements],
@@ -581,12 +599,19 @@ def validate_voc_extract(voc_extract: VoCExtract, transcript: str) -> VoCExtract
             f"{len(voc_extract.competitor_mentions) - len(valid_competitors)} mention(s) concurrent rejetée(s) faute de citation valide"
         )
 
+    valid_best_practices = [item for item in voc_extract.best_practice_moments if citation_matches_transcript(item.quote, transcript)]
+    if len(valid_best_practices) != len(voc_extract.best_practice_moments):
+        warnings.append(
+            f"{len(voc_extract.best_practice_moments) - len(valid_best_practices)} best practice(s) rejetée(s) faute de citation valide"
+        )
+
     return VoCExtract.model_validate(
         {
             **voc_extract.model_dump(),
             "topics": [item.model_dump() for item in valid_topics],
             "entity_perceptions": [item.model_dump() for item in valid_entities],
             "verbatim_quotes": [item.model_dump() for item in valid_verbatims[:5]],
+            "best_practice_moments": [item.model_dump() for item in valid_best_practices[:3]],
             "competitor_mentions": [item.model_dump() for item in valid_competitors],
             "validation_warnings": list(voc_extract.validation_warnings) + warnings,
         }

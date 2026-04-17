@@ -60,6 +60,55 @@ class PersistenceHelpersTest(unittest.TestCase):
         )
         mock_query.execute.assert_called_once_with()
 
+    def test_save_voc_extract_upserts_product_ideas_without_double_counting_rerun(self):
+        with mock.patch("persistence._seed_voc_taxonomy_once"), \
+             mock.patch("persistence._call_rgpd_opt_out", return_value=False), \
+             mock.patch("persistence._execute_delete", return_value=True), \
+             mock.patch("persistence._execute_upsert", return_value=True) as upsert_mock, \
+             mock.patch("persistence._find_existing_signal") as existing_mock:
+            existing_mock.side_effect = [
+                None,
+                {
+                    "id": "voc_signal:product_idea:abc",
+                    "description": "Ajouter une alerte proactive",
+                    "frequency": 1,
+                    "source_call_ids": ["call-1"],
+                    "status": "new",
+                    "first_seen": "2026-04-16",
+                    "last_seen": "2026-04-16",
+                    "tags": ["produit"],
+                },
+            ]
+            call = {"call_id_internal": "call-1", "user_id": 7, "user_name": "Alice", "phone_e164": "+33612345678"}
+            voc_extract = {
+                "topics": [],
+                "entity_perceptions": [],
+                "customer_emotions": ["satisfaction"],
+                "effort_score": 1,
+                "satisfaction_signal": "positif",
+                "churn_risk_signal": "aucun",
+                "expansion_signal": False,
+                "resolution_status": "resolved",
+                "competitor_mentions": [],
+                "verbatim_quotes": [],
+                "best_practice_moments": [],
+                "unmet_needs": [],
+                "product_ideas": ["Ajouter une alerte proactive"],
+                "taxonomy_version": "voc_taxonomy_v1",
+                "validation_warnings": [],
+            }
+
+            persistence.save_voc_extract("eval:call-1", call, voc_extract)
+            persistence.save_voc_extract("eval:call-1", call, voc_extract)
+
+        voc_signal_payloads = [
+            call.args[1]
+            for call in upsert_mock.call_args_list
+            if call.args and call.args[0] == "voc_signals"
+        ]
+        self.assertGreaterEqual(len(voc_signal_payloads), 2)
+        self.assertEqual(voc_signal_payloads[-1]["frequency"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

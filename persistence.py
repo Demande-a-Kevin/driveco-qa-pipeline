@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +11,7 @@ import call_classifier
 import config
 import rubric
 import voc_taxonomy
+from rapidfuzz import fuzz
 
 try:
     from supabase import Client, create_client
@@ -23,6 +25,7 @@ log = logging.getLogger(__name__)
 _CLIENT: Client | None = None
 _WARNED_DISABLED = False
 _VOC_TAXONOMY_SEEDED = False
+_SCHEMA_SUPPORT_CACHE: dict[tuple[str, str], bool] = {}
 
 
 def is_enabled() -> bool:
@@ -104,6 +107,15 @@ def canonical_agent_id(call: dict) -> str | None:
     return None
 
 
+def canonical_caller_hash(call: dict) -> str | None:
+    phone = str(call.get("phone_e164") or call.get("from_number") or call.get("customer_number") or "").strip()
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if not digits:
+        return None
+    normalized = f"+{digits}"
+    return sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
 def build_llm_run_id(mode: str, target_date: datetime) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{mode}:{target_date.strftime('%Y-%m-%d')}:{stamp}"
@@ -169,6 +181,26 @@ def _execute_upsert(table: str, payload: dict | list[dict], on_conflict: str) ->
     except Exception as exc:  # noqa: BLE001
         log.warning("[persistence] upsert %s échoué: %s", table, exc)
         return False
+
+
+def _supports_column(table: str, column: str) -> bool:
+    cache_key = (table, column)
+    if cache_key in _SCHEMA_SUPPORT_CACHE:
+        return _SCHEMA_SUPPORT_CACHE[cache_key]
+    supa = client()
+    if supa is None:
+        _SCHEMA_SUPPORT_CACHE[cache_key] = False
+        return False
+    try:
+        supa.table(table).select(column).limit(1).execute()
+        _SCHEMA_SUPPORT_CACHE[cache_key] = True
+    except Exception:
+        _SCHEMA_SUPPORT_CACHE[cache_key] = False
+    return _SCHEMA_SUPPORT_CACHE[cache_key]
+
+
+def _table_exists(table: str) -> bool:
+    return _supports_column(table, "id")
 
 
 def _execute_delete(table: str, **filters) -> bool:
@@ -266,6 +298,8 @@ def upsert_call(call: dict) -> str | None:
         "agent_id": upsert_agent(call),
         "raw": _json_safe(call),
     }
+    if _supports_column("calls", "caller_hash"):
+        row["caller_hash"] = canonical_caller_hash(call)
     if not _execute_upsert("calls", row, on_conflict="id"):
         return None
     return call_id
@@ -355,6 +389,8 @@ def save_evaluation(call: dict, evaluation: dict) -> str | None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "raw": _json_safe(evaluation),
     }
+    if _supports_column("evaluations", "resolution_status"):
+        row["resolution_status"] = evaluation.get("resolution_status")
     _execute_upsert("evaluations", row, on_conflict="call_id")
     _execute_delete("soft_skills", evaluation_id=evaluation_id)
     soft_skill_rows = _soft_skill_rows(evaluation_id, evaluation)
@@ -399,6 +435,8 @@ def save_voc_extract(evaluation_id: str, call: dict, voc_extract: dict | None) -
                 "detected_at": datetime.now(timezone.utc).isoformat(),
             }
         )
+        if _supports_column("topic_mentions", "product_area"):
+            topic_rows[-1]["product_area"] = item.get("product_area") or voc_taxonomy.product_area_for_topic(item.get("topic_code") or "")
     if topic_rows:
         _execute_upsert("topic_mentions", topic_rows, on_conflict="id")
 
@@ -452,7 +490,103 @@ def save_voc_extract(evaluation_id: str, call: dict, voc_extract: dict | None) -
         )
     if competitor_rows:
         _execute_upsert("competitor_mentions", competitor_rows, on_conflict="id")
+    _persist_voc_signals(evaluation_id, call, voc_extract)
+    _persist_best_practices(evaluation_id, call, voc_extract)
     return True
+
+
+def _signal_similarity(a: str, b: str) -> float:
+    return fuzz.ratio(str(a or "").strip().lower(), str(b or "").strip().lower()) / 100.0
+
+
+def _find_existing_signal(signal_type: str, description: str) -> dict | None:
+    candidates = _execute_select(
+        "voc_signals",
+        columns="id,type,description,frequency,source_call_ids,first_seen,last_seen,severity,status,tags",
+        limit=50,
+        order=("last_seen", True),
+        type=signal_type,
+    )
+    best = None
+    best_score = 0.0
+    for row in candidates:
+        score = _signal_similarity(row.get("description"), description)
+        if score >= 0.85 and score > best_score:
+            best = row
+            best_score = score
+    return best
+
+
+def _upsert_voc_signal(signal_type: str, description: str, call_id: str, detected_on: str, tags: list[str] | None = None) -> bool:
+    cleaned = re.sub(r"\s+", " ", str(description or "").strip())
+    if not cleaned or not call_id:
+        return False
+    existing = _find_existing_signal(signal_type, cleaned)
+    if existing:
+        already_present = call_id in (existing.get("source_call_ids") or [])
+        source_call_ids = list(dict.fromkeys([*(existing.get("source_call_ids") or []), call_id]))
+        row = {
+            "id": existing["id"],
+            "type": signal_type,
+            "detected_on": existing.get("detected_on") or detected_on,
+            "description": existing.get("description") or cleaned,
+            "source_call_ids": source_call_ids,
+            "frequency": int(existing.get("frequency") or 1) if already_present else int(existing.get("frequency") or 1) + 1,
+            "severity": existing.get("severity"),
+            "status": existing.get("status") or "new",
+            "first_seen": existing.get("first_seen") or detected_on,
+            "last_seen": detected_on,
+            "tags": list(dict.fromkeys([*(existing.get("tags") or []), *(tags or [])])),
+        }
+        return _execute_upsert("voc_signals", row, on_conflict="id")
+    signal_id = f"voc_signal:{signal_type}:{sha256(cleaned.lower().encode('utf-8')).hexdigest()[:16]}"
+    row = {
+        "id": signal_id,
+        "type": signal_type,
+        "detected_on": detected_on,
+        "description": cleaned,
+        "source_call_ids": [call_id],
+        "frequency": 1,
+        "severity": None,
+        "status": "new",
+        "first_seen": detected_on,
+        "last_seen": detected_on,
+        "tags": tags or [],
+    }
+    return _execute_upsert("voc_signals", row, on_conflict="id")
+
+
+def _persist_voc_signals(evaluation_id: str, call: dict, voc_extract: dict) -> None:
+    call_id = canonical_call_id(call)
+    if not call_id:
+        return
+    detected_on = datetime.now(timezone.utc).date().isoformat()
+    for item in voc_extract.get("product_ideas") or []:
+        _upsert_voc_signal("product_idea", item, call_id, detected_on, tags=["produit"])
+    for item in voc_extract.get("unmet_needs") or []:
+        _upsert_voc_signal("unmet_need", item, call_id, detected_on, tags=["cx"])
+    if voc_extract.get("expansion_signal"):
+        _upsert_voc_signal("opportunity", "Signal d'expansion ou recommandation détecté", call_id, detected_on, tags=["cx", "produit"])
+
+
+def _persist_best_practices(evaluation_id: str, call: dict, voc_extract: dict) -> None:
+    if not _table_exists("agent_best_practices"):
+        return
+    _execute_delete("agent_best_practices", evaluation_id=evaluation_id)
+    rows = []
+    agent_id = canonical_agent_id(call)
+    for idx, item in enumerate(voc_extract.get("best_practice_moments") or []):
+        rows.append(
+            {
+                "id": f"best_practice:{evaluation_id}:{idx}",
+                "evaluation_id": evaluation_id,
+                "quote": item.get("quote"),
+                "agent_id": agent_id,
+                "topic_code": item.get("topic_code"),
+            }
+        )
+    if rows:
+        _execute_upsert("agent_best_practices", rows, on_conflict="id")
 
 
 def purge_expired_verbatims() -> bool:
@@ -485,6 +619,8 @@ def save_daily_snapshot(snapshot_date: datetime, scope: str, metrics: dict) -> b
         "coverage_pct": metrics.get("coverage_pct"),
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
+    if _supports_column("daily_kpi_snapshot", "fcr_rate"):
+        row["fcr_rate"] = metrics.get("fcr_rate_pct")
     return _execute_upsert("daily_kpi_snapshot", row, on_conflict="date,scope,agent_id")
 
 
@@ -572,9 +708,12 @@ def save_shadow_runs(rows: list[dict]) -> int:
 def fetch_daily_snapshots(scope: str, days: int = 14, agent_id: str = "") -> list[dict]:
     cutoff = datetime.now(timezone.utc).date().toordinal() - max(1, int(days))
     cutoff_date = datetime.fromordinal(cutoff).strftime("%Y-%m-%d")
+    columns = "date,scope,agent_id,pickup_rate,abandon_rate,avg_soft_score,total_calls,avg_handle_time,repeat_caller_rate,kb_compliance_rate,warm_transfer_success_rate,coverage_pct"
+    if _supports_column("daily_kpi_snapshot", "fcr_rate"):
+        columns += ",fcr_rate"
     return _execute_select(
         "daily_kpi_snapshot",
-        columns="date,scope,agent_id,pickup_rate,abandon_rate,avg_soft_score,total_calls,avg_handle_time,repeat_caller_rate,kb_compliance_rate,warm_transfer_success_rate,coverage_pct",
+        columns=columns,
         order=("date", False),
         scope=scope,
         agent_id=str(agent_id or ""),
@@ -589,6 +728,10 @@ def fetch_recent_anomaly_events(limit: int = 20) -> list[dict]:
 def fetch_latest_llm_run() -> dict | None:
     rows = _execute_select("llm_runs", columns="id,started_at,ended_at,mode,model,calls_count,errors_count,tokens_total,status,raw", limit=1, order=("started_at", True))
     return rows[0] if rows else None
+
+
+def fetch_view_rows(view_name: str, columns: str = "*", limit: int | None = None, order: tuple[str, bool] | None = None, **filters) -> list[dict]:
+    return _execute_select(view_name, columns=columns, limit=limit, order=order, **filters)
 
 
 def persist_calls(calls: list[dict]) -> int:

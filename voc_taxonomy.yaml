@@ -3,70 +3,103 @@ version: voc_taxonomy_v1
 topics:
   - code: facturation
     label: Facturation
+    product_area: billing
   - code: borne_hs_terrain
     label: Borne HS terrain
+    product_area: hardware
   - code: borne_indisponible
     label: Borne indisponible
+    product_area: hardware
   - code: borne_occupee
     label: Borne occupée
+    product_area: hardware
   - code: demarrage_charge
     label: Démarrage de charge
+    product_area: hardware
   - code: interruption_charge
     label: Interruption de charge
+    product_area: hardware
   - code: app_bug
     label: Bug application
+    product_area: app
   - code: app_connexion
     label: Connexion application
+    product_area: app
   - code: app_paiement
     label: Paiement application
+    product_area: app
   - code: carte_rfid
     label: Carte RFID
+    product_area: support
   - code: itinerance
     label: Itinérance
+    product_area: support
   - code: abonnement
     label: Abonnement
+    product_area: billing
   - code: resiliation
     label: Résiliation
+    product_area: billing
   - code: compte_acces
     label: Compte et accès
+    product_area: app
   - code: mot_de_passe
     label: Mot de passe
+    product_area: app
   - code: tarification
     label: Tarification
+    product_area: billing
   - code: remboursement
     label: Remboursement
+    product_area: billing
   - code: communication_panne
     label: Communication de panne
+    product_area: support
   - code: suivi_ticket
     label: Suivi ticket
+    product_area: support
   - code: temps_attente
     label: Temps d'attente
+    product_area: support
   - code: qualite_support
     label: Qualité du support
+    product_area: support
   - code: installation_privee
     label: Installation privée
+    product_area: installation
   - code: sav_physique
     label: SAV physique
+    product_area: installation
   - code: question_produit
     label: Question produit
+    product_area: other
   - code: disponibilite_reseau
     label: Disponibilité réseau
+    product_area: hardware
   - code: localisation_borne
     label: Localisation borne
+    product_area: app
   - code: retard_intervention
     label: Retard d'intervention
+    product_area: installation
   - code: bug_bluetooth
     label: Bug Bluetooth
+    product_area: app
   - code: qr_code
     label: QR code
+    product_area: app
   - code: badge_tiers
     label: Badge tiers
+    product_area: support
   - code: feedback_positif
     label: Feedback positif
+    product_area: support
   - code: recommandation
     label: Recommandation
+    product_area: support
   - code: suggestion_produit
     label: Suggestion produit
+    product_area: other
 
 entities:
   - code: driveco_marque

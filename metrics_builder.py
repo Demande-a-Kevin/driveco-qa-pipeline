@@ -226,6 +226,18 @@ def kb_compliance_rate(call_evaluations: list[dict]) -> float | None:
     return round(sum(values) / len(values) * 100, 1)
 
 
+def first_call_resolution_rate(call_evaluations: list[dict]) -> float | None:
+    statuses = [
+        str(ev.get("resolution_status") or "").strip()
+        for ev in call_evaluations or []
+        if str(ev.get("resolution_status") or "").strip()
+    ]
+    if not statuses:
+        return None
+    resolved = sum(1 for status in statuses if status == "resolved")
+    return round(resolved / len(statuses) * 100, 1)
+
+
 def warm_transfer_success_rate(calls: list[dict]) -> float | None:
     transfer_calls = [
         call for call in calls or []
@@ -508,6 +520,43 @@ def aggregate_voc_opportunities(evaluations: list[dict], limit: int = 8) -> list
     return [{"description": text, "count": count} for text, count in counts.most_common(limit)]
 
 
+def aggregate_voc_best_practices(evaluations: list[dict], limit: int = 3) -> list[dict]:
+    rows = []
+    for evaluation in evaluations or []:
+        voc_extract = evaluation.get("voc_extract") or {}
+        for item in voc_extract.get("best_practice_moments") or []:
+            quote = anonymize_verbatim(item.get("quote") or "")
+            if not quote:
+                continue
+            rows.append(
+                {
+                    "call_id": evaluation.get("call_id"),
+                    "agent": evaluation.get("agent") or evaluation.get("user_name") or "Agent",
+                    "quote": quote,
+                    "topic_code": item.get("topic_code"),
+                }
+            )
+    return rows[:limit]
+
+
+def aggregate_voc_positive_satisfaction(evaluations: list[dict]) -> dict:
+    positive_calls = []
+    for evaluation in evaluations or []:
+        voc_extract = evaluation.get("voc_extract") or {}
+        if voc_extract.get("satisfaction_signal") != "positif":
+            continue
+        quote = ""
+        for item in voc_extract.get("verbatim_quotes") or []:
+            quote = anonymize_verbatim(item.get("quote") or "")
+            if quote:
+                break
+        positive_calls.append({"call_id": evaluation.get("call_id"), "quote": quote})
+    return {
+        "count": len(positive_calls),
+        "sample_quote": positive_calls[0]["quote"] if positive_calls else "",
+    }
+
+
 def aggregate_voc_competitor_watch(evaluations: list[dict], limit: int = 6) -> list[dict]:
     counts = Counter()
     samples: dict[str, str] = {}
@@ -556,6 +605,8 @@ def build_voc_summary(evaluations: list[dict]) -> dict:
         "entity_sentiment": aggregate_voc_entity_sentiment(evaluations),
         "churn_risk_calls": aggregate_voc_churn_risks(evaluations),
         "opportunities": aggregate_voc_opportunities(evaluations),
+        "best_practices": aggregate_voc_best_practices(evaluations),
+        "positive_satisfaction": aggregate_voc_positive_satisfaction(evaluations),
         "competitors": aggregate_voc_competitor_watch(evaluations),
         "weak_signals": weak_signals,
         "verbatims": verbatims[:5],

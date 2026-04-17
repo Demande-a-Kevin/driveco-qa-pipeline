@@ -10,6 +10,7 @@ import d1_client
 import config
 import qa_prompting
 import schemas
+import rubric
 
 
 # Charge les modèles depuis qa_config si disponibles
@@ -142,11 +143,12 @@ def analyze_batch(batch_calls: list[dict], kb_summary: str, model: str | None = 
             response_model=schemas.CriterionScorecard,
         )
         scoring.pop("_llm_meta", None)
+        provisional_score = rubric.compute_weighted_score(schemas.CriterionScorecard.model_validate(scoring).score_map())
         voc_extract = None
         if config.ENABLE_VOC_ANALYSIS:
             voc_extract = analyze(
                 system_prompt=qa_prompting.load_voc_system_prompt(),
-                messages=qa_prompting.build_voc_messages(call)[1:],
+                messages=qa_prompting.build_voc_messages(call, score_global=provisional_score)[1:],
                 model=model,
                 max_tokens=1800,
                 response_model=schemas.VoCExtract,

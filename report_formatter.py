@@ -10,6 +10,7 @@ except ImportError:
     import pytz
     _PARIS = pytz.timezone("Europe/Paris")
 import config
+import persistence
 
 _AIRCALL_BASE = "https://asset.aircall.io/calls"
 _ISSUE_TYPE_LABELS = {
@@ -139,7 +140,9 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
     weak_signals = summary.get("weak_signals") or []
     competitors = summary.get("competitors") or []
     opportunities = summary.get("opportunities") or []
-    if not (top_topics or verbatims or weak_signals or competitors or opportunities):
+    best_practices = summary.get("best_practices") or []
+    positive_satisfaction = summary.get("positive_satisfaction") or {}
+    if not (top_topics or verbatims or weak_signals or competitors or opportunities or best_practices):
         return
 
     lines += ["## Voix du client", ""]
@@ -166,10 +169,98 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
             lines.append(f"- {item.get('competitor_name')} — {item.get('count', 0)} mention(s) — « {sample} »")
         lines.append("")
     if opportunities:
-        lines.append("### Opportunités produit")
+        lines.append("### 💡 Opportunités détectées")
         for item in opportunities[:5]:
             lines.append(f"- {item.get('description')} — {item.get('count', 0)} occurrence(s)")
         lines.append("")
+    if best_practices:
+        lines.append("### ✨ Bonnes pratiques agents")
+        for item in best_practices[:3]:
+            lines.append(f"- Agent anonymisé — « {item.get('quote')} »")
+        lines.append("")
+    if positive_satisfaction.get("count"):
+        lines.append("### 🌱 Satisfaction positive")
+        lines.append(f"- {positive_satisfaction.get('count', 0)} appel(s) avec signal positif")
+        if positive_satisfaction.get("sample_quote"):
+            lines.append(f"- Verbatim : « {positive_satisfaction.get('sample_quote')} »")
+        lines.append("")
+    if competitors:
+        lines.append("### 👀 Concurrents cités")
+        names = ", ".join(item.get("competitor_name", "?") for item in competitors[:5])
+        lines.append(f"- {sum(int(item.get('count', 0) or 0) for item in competitors)} mention(s) — {names}")
+        lines.append("")
+
+
+def _dedupe_texts(items: list[dict]) -> list[dict]:
+    seen = set()
+    output = []
+    for item in items:
+        normalized = re.sub(r"\s+", " ", str(item.get("description") or "").strip().lower())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        output.append(item)
+    return output
+
+
+def build_actionable_items(analysis: dict) -> list[dict]:
+    items = []
+    for ev in analysis.get("top_problematic_calls", []) or []:
+        description = _normalize_issue_text((ev.get("errors") or [""])[0]) or "appel problématique"
+        items.append(
+            {
+                "source": "top_problematic_calls",
+                "tag": "coaching",
+                "description": description,
+                "call_id": ev.get("call_id"),
+                "priority": "high",
+                "agent": ev.get("agent") or ev.get("user_name"),
+                "score_global": ev.get("score_global"),
+            }
+        )
+    kb = analysis.get("kb_gaps", {}) or {}
+    for section in ("missing", "incomplete", "to_revise"):
+        for item in _normalize_kb_items(kb.get(section, []), section):
+            items.append(
+                {
+                    "source": "kb_gaps",
+                    "tag": "kb",
+                    "description": item,
+                    "call_id": None,
+                    "priority": "high" if section == "missing" else "medium",
+                }
+            )
+    for item in (analysis.get("voc_summary") or {}).get("opportunities", []) or []:
+        items.append(
+            {
+                "source": "voc",
+                "tag": "produit",
+                "description": item.get("description"),
+                "call_id": None,
+                "priority": "medium",
+            }
+        )
+    for item in (analysis.get("voc_summary") or {}).get("competitors", []) or []:
+        items.append(
+            {
+                "source": "voc",
+                "tag": "concurrence",
+                "description": f"{item.get('competitor_name')} — {item.get('count', 0)} mention(s)",
+                "call_id": None,
+                "priority": "medium",
+            }
+        )
+    for item in analysis.get("anomalies", []) or []:
+        items.append(
+            {
+                "source": "anomaly",
+                "tag": "cx",
+                "description": f"{item.get('metric')} anormal sur {item.get('scope')}",
+                "call_id": None,
+                "priority": "critical",
+            }
+        )
+    return _dedupe_texts(items)
 
 
 def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
@@ -183,6 +274,11 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
     drv_just      = scores.get("driveco_score_justification", "")
 
     lines = []
+    actionable_items = analysis.get("actionable_items") or build_actionable_items(analysis)
+    analysis["actionable_items"] = actionable_items
+    coaching_items = [item for item in actionable_items if item.get("tag") == "coaching"]
+    kb_items = [item for item in actionable_items if item.get("tag") == "kb"]
+    anomaly_items = [item for item in actionable_items if item.get("priority") == "critical" and item.get("source") == "anomaly"]
     if run_health.get("degraded"):
         lines += [f"# ⚠️ RUN DÉGRADÉ — couverture {run_health.get('retention_rate_pct', 0)}%", ""]
 
@@ -241,11 +337,14 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
             lines.append(f"- {link} — {started_label} — {duration // 60}min{duration % 60:02d}s")
         lines.append("")
 
-    # Top appels problématiques — mis en avant avant tout le reste
     top_prob = analysis.get("top_problematic_calls", [])
     if top_prob:
         lines += ["## 🚨 Appels les plus problématiques", ""]
+        shown = 0
         for ev in top_prob:
+            desc = _normalize_issue_text((ev.get("errors") or [""])[0]) or "appel problématique"
+            if not any(item for item in coaching_items if item.get("description") == desc):
+                continue
             cid    = ev.get("call_id", "?")
             agent  = ev.get("agent") or ev.get("user_name") or "N/A"
             dur    = ev.get("duration_seconds") or ev.get("duration_in_call") or "?"
@@ -274,6 +373,9 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
                 icon = "🔴" if alt.get("level") == "critical" else "⚠️"
                 lines.append(f"- {icon} {alt.get('message', '')}")
             lines.append("")
+            shown += 1
+            if shown >= 5:
+                break
 
     good = analysis.get("good_practices", [])
     if good:
@@ -319,46 +421,24 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
             lines.extend(obs_lines)
         lines.append("")
 
-    issues = analysis.get("top_issues", [])
-    if issues:
-        lines += ["## Top problèmes clients"]
-        for i, issue in enumerate(issues[:5], 1):
-            lines.append(f"{i}. {issue.get('issue')} — {issue.get('occurrences', '?')} occurrence(s)")
+    if anomaly_items:
+        lines += ["## ⚠️ Alertes", ""]
+        for item in anomaly_items[:5]:
+            lines.append(f"- 🔴 {item.get('description')}")
         lines.append("")
 
-    alerts = analysis.get("alerts", []) + metrics.get("alerts", [])
-    if alerts:
-        lines += ["## Alertes"]
-        for a in alerts:
-            icon = "🔴" if a.get("level") == "critical" else "🟡"
-            lines.append(f"{icon} {a.get('message')}")
+    if kb_items:
+        lines += ["## 📚 KB", ""]
+        for item in kb_items[:5]:
+            lines.append(f"- [ ] {item.get('description')}")
         lines.append("")
 
-    kb = analysis.get("kb_gaps", {})
-    lines += ["## Recommandations Knowledge Base", ""]
-    missing = _normalize_kb_items(kb.get("missing", []), "missing")
-    incomplete = _normalize_kb_items(kb.get("incomplete", []), "incomplete")
-    to_revise = _normalize_kb_items(kb.get("to_revise", []), "to_revise")
-    if missing:
-        lines += ["### Articles à créer"]
-        for item in missing:
-            lines.append(f"- [ ] {item}")
+    focus_items = [item for item in coaching_items if item.get("description") not in {x.get("description") for x in coaching_items[:5]}]
+    if focus_items:
+        lines += ["## Focus coaching du jour", ""]
+        for item in focus_items[:3]:
+            lines.append(f"- {item.get('description')}")
         lines.append("")
-    if incomplete:
-        lines += ["### Articles à compléter"]
-        for item in incomplete:
-            lines.append(f"- [ ] {item}")
-        lines.append("")
-    if to_revise:
-        lines += ["### Articles à réviser"]
-        for item in to_revise:
-            lines.append(f"- [ ] {item}")
-        lines.append("")
-
-    recs = analysis.get("recommendations", [])
-    if recs:
-        lines += ["## Recommandations opérationnelles"]
-        lines += [f"- {r}" for r in recs]
 
     _append_voc_section(lines, analysis)
 
@@ -374,196 +454,97 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
 
 
 def format_weekly_report(start: datetime, end: datetime, metrics: dict, analysis: dict) -> str:
-    """
-    Rapport hebdomadaire structuré — 7 jours, KPIs CS complets, breakdown journalier.
-    Conforme aux standards Customer Care : volumétrie, taux décroché, AHT, CSAT proxy, tendances.
-    """
     kpis   = analysis.get("kpis", metrics)
     scores = analysis.get("scores", {})
-    trend  = analysis.get("weekly_trend") or ""
-
-    ucc_score  = scores.get("ucc_quality_score", "N/A")
-    drv_score  = scores.get("driveco_care_score", "N/A")
-    ucc_just   = scores.get("ucc_score_justification", "")
-    drv_just   = scores.get("driveco_score_justification", "")
-
     week_label = f"Semaine du {start.strftime('%d/%m')} au {end.strftime('%d/%m/%Y')}"
+    trend_rows = persistence.fetch_view_rows("v_kpi_trend_daily", columns="date,total_calls,pickup_rate,abandon_rate,avg_soft_score,fcr_rate", scope="global")
+    topic_rows = persistence.fetch_view_rows("v_voc_topics_trend_28d", columns="day,topic_code,mentions,avg_sentiment", limit=10)
+    opportunity_rows = persistence.fetch_view_rows("v_voc_opportunities_ranked", columns="description,frequency,opportunity_score", limit=5)
+    competitor_rows = persistence.fetch_view_rows("v_voc_competitors_watch", columns="week_start,competitor_name,mentions", limit=5)
+    agent_rows = persistence.fetch_view_rows("v_agent_scorecard_30d", columns="agent_name,avg_soft_score,total_calls,kb_compliance_rate", limit=10)
+    kb_gap_rows = persistence.fetch_view_rows("v_kb_gaps_active", columns="topic,frequency,status", limit=5)
 
-    lines = [
-        f"# Bilan Hebdomadaire — {week_label}",
-        "",
-        "## Scores qualité",
-        f"**UCC** {_score_icon(ucc_score)} {_score_text(ucc_score)} — {ucc_just}",
-        f"**Driveco Care** {_score_icon(drv_score)} {_score_text(drv_score)} — {drv_just}",
-        "",
-    ]
+    def _wow(metric_key: str) -> str:
+        values = [row.get(metric_key) for row in trend_rows if row.get(metric_key) is not None][:14]
+        if len(values) < 14:
+            return "n/a"
+        current = sum(float(v) for v in values[:7]) / 7
+        previous = sum(float(v) for v in values[7:14]) / 7
+        delta = round(current - previous, 1)
+        sign = "+" if delta > 0 else ""
+        return f"{sign}{delta}"
 
-    # ── KPIs principaux (semaine complète) ────────────────────────────────────
-    total     = kpis.get("calls_presented", 0)
-    answered  = kpis.get("calls_answered", 0)
-    overflow  = kpis.get("overflow_count", 0)
-    abandoned = kpis.get("abandoned_count", 0)
-    escalations = kpis.get("escalations_count", 0)
-    pickup    = kpis.get("pickup_rate_pct", 0)
-    ovfl_pct  = kpis.get("overflow_rate_pct", 0)
-    abn_pct   = kpis.get("abandon_rate_pct", 0)
-    kb_rate   = kpis.get("kb_compliance_rate_pct", 0)
-    avg_dur   = kpis.get("avg_duration_seconds", 0)
-    avg_wait  = kpis.get("avg_wait_time_seconds", 0)
+    cx_health = None
+    try:
+        pickup = float(kpis.get("pickup_rate_pct") or 0)
+        abandon = float(kpis.get("abandon_rate_pct") or 0)
+        ucc = float(scores.get("ucc_quality_score") or 0)
+        drv = float(scores.get("driveco_care_score") or 0)
+        fcr = float((analysis.get("snapshot_metrics") or {}).get("fcr_rate_pct") or 0)
+        cx_health = round((pickup * 0.2) + ((100 - abandon) * 0.2) + (ucc * 5 * 0.2) + (drv * 5 * 0.2) + (fcr * 0.2), 1)
+    except (TypeError, ValueError):
+        cx_health = None
 
-    # AHT en minutes:secondes
-    def _fmt_dur(seconds) -> str:
-        try:
-            s = int(seconds)
-            return f"{s // 60}m{s % 60:02d}s"
-        except (TypeError, ValueError):
-            return f"{seconds}s"
+    lines = [f"# Bilan Hebdomadaire — {week_label}", ""]
+    lines += ["## Exec summary"]
+    lines.append(f"- Volume semaine : {kpis.get('calls_presented', 0)} appels")
+    lines.append(f"- Pickup : {kpis.get('pickup_rate_pct', 0)}% | Abandon : {kpis.get('abandon_rate_pct', 0)}%")
+    lines.append(f"- Score UCC : {_score_text(scores.get('ucc_quality_score'))} | Score Driveco : {_score_text(scores.get('driveco_care_score'))}")
+    lines.append(f"- CX health composite score : {cx_health if cx_health is not None else 'n/a'}")
+    lines.append("")
 
-    lines += [
-        "## KPIs hebdomadaires",
-        "| Métrique | Valeur | Objectif | Statut |",
-        "|---|---|---|---|",
-        f"| Appels présentés | {total} | — | — |",
-        f"| Appels décrochés | {answered} | — | — |",
-        f"| Taux de décroché (UCC) | {pickup}% | ≥ 85% | {_icon(pickup, 'pickup_rate')} |",
-        f"| Taux d'overflow | {ovfl_pct}% | ≤ 10% | {_icon(ovfl_pct, 'overflow_rate')} |",
-        f"| Taux d'abandon | {abn_pct}% | ≤ 8% | {_icon(abn_pct, 'abandon_rate')} |",
-        f"| Appels abandonnés | {abandoned} | — | — |",
-        f"| Escalades (transferts chauds) | {escalations} | — | — |",
-        f"| Conformité KB | {kb_rate}% | ≥ 80% | {_icon(kb_rate, 'kb_compliance_rate')} |",
-        f"| Durée moyenne d'appel (AHT) | {_fmt_dur(avg_dur)} | — | — |",
-        f"| Temps d'attente moyen | {_fmt_dur(avg_wait)} | — | — |",
-        "",
-    ]
+    lines += ["## Δ WoW sur 6 KPIs"]
+    lines.append(f"- Volume : {_wow('total_calls')}")
+    lines.append(f"- Pickup : {_wow('pickup_rate')}")
+    lines.append(f"- Abandon : {_wow('abandon_rate')}")
+    lines.append(f"- Score UCC : {_wow('avg_soft_score')}")
+    lines.append(f"- Score Driveco : {_score_text(scores.get('driveco_care_score'))}")
+    lines.append(f"- FCR : {_wow('fcr_rate')}")
+    lines.append("")
 
-    # ── Breakdown journalier ───────────────────────────────────────────────────
-    daily_breakdown = metrics.get("daily_breakdown", {})
-    if daily_breakdown:
-        lines += ["## Détail journalier", ""]
-        lines.append("| Jour | Appels | Décroché | Overflow | Abandon | AHT |")
-        lines.append("|---|---|---|---|---|---|")
-        from datetime import timedelta
-        for i in range(7):
-            day = start + timedelta(days=i)
-            day_str = day.strftime("%Y-%m-%d")
-            dm = daily_breakdown.get(day_str, {})
-            if not dm:
-                lines.append(f"| {day.strftime('%a %d/%m')} | 0 | — | — | — | — |")
-                continue
-            d_pickup = dm.get("pickup_rate_pct", 0)
-            d_ovfl   = dm.get("overflow_rate_pct", 0)
-            d_abn    = dm.get("abandon_rate_pct", 0)
-            d_dur    = _fmt_dur(dm.get("avg_duration_seconds", 0))
-            lines.append(
-                f"| {day.strftime('%a %d/%m')} "
-                f"| {dm.get('calls_presented', 0)} "
-                f"| {_icon(d_pickup, 'pickup_rate')} {d_pickup}% "
-                f"| {_icon(d_ovfl, 'overflow_rate')} {d_ovfl}% "
-                f"| {_icon(d_abn, 'abandon_rate')} {d_abn}% "
-                f"| {d_dur} |"
-            )
+    if topic_rows:
+        lines += ["## Topics en mouvement"]
+        for row in topic_rows[:5]:
+            lines.append(f"- {row.get('topic_code')} — {row.get('mentions')} mention(s), sentiment {row.get('avg_sentiment')}")
         lines.append("")
 
-    # ── Top appels problématiques ──────────────────────────────────────────────
-    top_prob = analysis.get("top_problematic_calls", [])
-    if top_prob:
-        lines += ["## Appels les plus problématiques de la semaine", ""]
-        for ev in top_prob:
-            cid   = ev.get("call_id", "?")
-            agent = ev.get("agent") or ev.get("user_name") or "N/A"
-            dur   = ev.get("duration_seconds") or ev.get("duration_in_call") or "?"
-            kb_c  = ev.get("kb_compliance", "?")
-            errors = ev.get("errors", [])
-            alts   = ev.get("alerts", [])
-            day_ref = ev.get("day") or ""
-            day_str = f" ({day_ref})" if day_ref else ""
-            link = _aircall_link_md(cid)
-            lines.append(f"### Appel {link} — {agent}{day_str} ({dur}s) — KB : `{kb_c}`")
-            for err in errors[:3]:
-                lines.append(f"- ❌ {err}")
-            for alt in alts[:2]:
-                icon = "🔴" if alt.get("level") == "critical" else "⚠️"
-                lines.append(f"- {icon} {alt.get('message', '')}")
-            lines.append("")
-
-    # ── Bonnes pratiques ──────────────────────────────────────────────────────
-    good = analysis.get("good_practices", [])
-    if good:
-        lines += ["## Bonnes pratiques observées"]
-        lines += [f"- {p}" for p in good]
+    weak_signals = (analysis.get("voc_summary") or {}).get("weak_signals") or []
+    if weak_signals:
+        lines += ["## Nouveaux signaux faibles / clos"]
+        for row in weak_signals[:5]:
+            lines.append(f"- {row.get('topic_code')} — {row.get('count', 0)} mention(s)")
         lines.append("")
 
-    # ── Top problèmes clients ─────────────────────────────────────────────────
-    issues = analysis.get("top_issues", [])
-    if issues:
-        lines += ["## Top problèmes clients"]
-        for i, issue in enumerate(issues[:5], 1):
-            lines.append(f"{i}. {issue.get('issue')} — {issue.get('occurrences', '?')} occurrence(s)")
+    if agent_rows:
+        lines += ["## Agent leaderboard"]
+        for row in agent_rows[:5]:
+            lines.append(f"- {row.get('agent_name') or 'Agent'} — soft {row.get('avg_soft_score')} / KB {row.get('kb_compliance_rate')} / volume {row.get('total_calls')}")
         lines.append("")
 
-    # ── Tendance hebdomadaire (S vs S-1) ──────────────────────────────────────
-    if trend:
-        lines += ["## Tendance vs semaine précédente", "", trend, ""]
-
-    # ── Alertes ───────────────────────────────────────────────────────────────
-    alerts = analysis.get("alerts", []) + metrics.get("alerts", [])
-    if alerts:
-        lines += ["## Alertes"]
-        for a in alerts:
-            icon = "🔴" if a.get("level") == "critical" else "🟡"
-            lines.append(f"{icon} {a.get('message')}")
+    if opportunity_rows:
+        lines += ["## Opportunités"]
+        for row in opportunity_rows[:5]:
+            lines.append(f"- {row.get('description')} — score {row.get('opportunity_score')} / fréquence {row.get('frequency')}")
         lines.append("")
 
-    # ── Soft skills synthèse ──────────────────────────────────────────────────
-    evals = analysis.get("call_evaluations", [])
-    soft_evals = [(ev.get("call_id", "?"), ev.get("soft_skills")) for ev in evals if ev.get("soft_skills")]
-    soft_evals = [(cid, ss) for cid, ss in soft_evals if ss and ss.get("note_globale") is not None]
-    if soft_evals:
-        notes = [float(ss.get("note_globale")) for _, ss in soft_evals]
-        avg_note = round(sum(notes) / len(notes), 1) if notes else None
-        if avg_note is not None:
-            lines += [
-                "## Soft Skills — synthèse semaine",
-                f"Note moyenne : **{avg_note}/10** sur {len(soft_evals)} appels évalués",
-                "",
-            ]
-
-    # ── Knowledge Base ────────────────────────────────────────────────────────
-    kb = analysis.get("kb_gaps", {})
-    lines += ["## Recommandations Knowledge Base", ""]
-    missing = _normalize_kb_items(kb.get("missing", []), "missing")
-    incomplete = _normalize_kb_items(kb.get("incomplete", []), "incomplete")
-    to_revise = _normalize_kb_items(kb.get("to_revise", []), "to_revise")
-    if missing:
-        lines += ["### Articles à créer"]
-        for item in missing:
-            lines.append(f"- [ ] {item}")
-        lines.append("")
-    if incomplete:
-        lines += ["### Articles à compléter"]
-        for item in incomplete:
-            lines.append(f"- [ ] {item}")
-        lines.append("")
-    if to_revise:
-        lines += ["### Articles à réviser"]
-        for item in to_revise:
-            lines.append(f"- [ ] {item}")
+    if competitor_rows:
+        lines += ["## Competitor watch"]
+        for row in competitor_rows[:5]:
+            lines.append(f"- {row.get('competitor_name')} — {row.get('mentions')} mention(s)")
         lines.append("")
 
-    # ── Recommandations opérationnelles ──────────────────────────────────────
-    recs = analysis.get("recommendations", [])
-    if recs:
-        lines += ["## Recommandations opérationnelles"]
-        lines += [f"- {r}" for r in recs]
+    if kb_gap_rows:
+        lines += ["## KB gaps persistants vs nouveaux"]
+        for row in kb_gap_rows[:5]:
+            lines.append(f"- {row.get('topic')} — {row.get('frequency')} occurrence(s) — statut {row.get('status')}")
         lines.append("")
 
-    _append_voc_section(lines, analysis)
-
-    lines += [
-        "---",
-        "*⚠️ Note couverture : les appels de la ligne 1214611 (DRIVECO - UCC Transfer) "
-        "ne sont pas capturés dans Aircall/D1. Les overflows directs UCC→Driveco "
-        "(~85 appels sur la période analysée) sont absents de cette analyse.*",
-    ]
+    actions = _dedupe_texts(build_actionable_items(analysis))
+    if actions:
+        lines += ["## Actions top 5 avec owner suggéré"]
+        owner_map = {"kb": "Knowledge", "coaching": "Ops", "produit": "Produit", "cx": "Ops", "concurrence": "Direction"}
+        for item in actions[:5]:
+            lines.append(f"- [{owner_map.get(item.get('tag'), 'Ops')}] {item.get('description')}")
+        lines.append("")
 
     return "\n".join(lines)

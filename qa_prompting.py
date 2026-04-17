@@ -68,6 +68,7 @@ def build_extraction_messages(call: dict, kb_summary: str) -> list[dict]:
         "alerts": [{"level": "critical|warning|info", "message": "string", "call_ids": ["string"]}],
         "procedural_steps_followed": ["string"],
         "emotional_signals": ["string"],
+        "resolution_status": "resolved|escalated|pending|unresolved|callback_scheduled",
     }
     user_prompt = (
         "Tâche: extraction factuelle uniquement. Pas de scoring.\n"
@@ -75,6 +76,7 @@ def build_extraction_messages(call: dict, kb_summary: str) -> list[dict]:
         "- Ne juge pas l'agent globalement.\n"
         "- Chaque positive et chaque improvement_point doit avoir une citation exacte du transcript.\n"
         "- customer_call_reason doit être courte et lisible.\n"
+        "- resolution_status doit refléter uniquement l'issue explicite de l'appel.\n"
         "- Si le transcript n'est pas exploitable, mets transcript_usable=false et laisse les listes vides si besoin.\n"
         "- Réponds uniquement avec un JSON conforme.\n\n"
         f"Rubric context:\n{rubric.build_rubric_prompt_block()}\n\n"
@@ -149,12 +151,15 @@ def build_scoring_messages(call: dict, factual_extract: dict) -> list[dict]:
     return messages
 
 
-def build_voc_messages(call: dict) -> list[dict]:
+def build_voc_messages(call: dict, score_global: float | None = None) -> list[dict]:
     payload = build_call_payload(call)
+    if score_global is not None:
+        payload["qa_score_global"] = round(float(score_global), 1)
     schema_hint = {
         "topics": [
             {
                 "topic_code": "string",
+                "product_area": "app|hardware|billing|api|installation|support|other",
                 "sentiment": "très_négatif|négatif|neutre|positif|très_positif",
                 "severity": "1-5",
                 "quote": "string <=240",
@@ -175,10 +180,14 @@ def build_voc_messages(call: dict) -> list[dict]:
         "satisfaction_signal": "positif|neutre|négatif|mixte",
         "churn_risk_signal": "aucun|faible|modéré|élevé",
         "expansion_signal": "boolean",
+        "resolution_status": "resolved|escalated|pending|unresolved|callback_scheduled",
         "competitor_mentions": [
             {"competitor_name": "string", "context_quote": "string <=240", "sentiment": "très_négatif|négatif|neutre|positif|très_positif"}
         ],
         "verbatim_quotes": [
+            {"quote": "string <=240", "timestamp_s": "int|null", "speaker": "string|null", "topic_code": "string|null", "sentiment": "enum|null"}
+        ],
+        "best_practice_moments": [
             {"quote": "string <=240", "timestamp_s": "int|null", "speaker": "string|null", "topic_code": "string|null", "sentiment": "enum|null"}
         ],
         "unmet_needs": ["string"],
@@ -216,6 +225,9 @@ def build_voc_messages(call: dict) -> list[dict]:
                 "- Chaque topic, entity_perception, competitor mention et verbatim doit contenir une quote retrouvable dans le transcript.\n"
                 "- Utilise uniquement la taxonomie fournie. Si besoin, utilise autre_<texte_court> et needs_taxonomy_review=true.\n"
                 "- Limite verbatim_quotes à 5.\n"
+                "- Identifie systématiquement les product_ideas, unmet_needs et signaux d'expansion quand ils existent.\n"
+                "- Si le client exprime un compliment, un remerciement ou un soulagement, satisfaction_signal doit refléter ce positif avec verbatim.\n"
+                "- best_practice_moments doit rester vide sauf si l'échange montre clairement une excellence méthodologique de l'agent.\n"
                 "- Réponds uniquement avec un JSON conforme.\n\n"
                 f"Taxonomie:\n{voc_taxonomy.taxonomy_prompt_block()}\n\n"
                 f"Call payload:\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"

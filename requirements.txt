@@ -10,3 +10,4 @@ PyYAML>=6.0.1
 pytz>=2024.1
 supabase>=2.15.3
 json-repair>=0.25
+RapidFuzz>=3.10.1

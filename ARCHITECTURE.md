@@ -139,6 +139,8 @@ Sorties possibles :
 - [db/migrations/005_reliability.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/005_reliability.sql)
 - [db/migrations/006_views.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/006_views.sql)
 - [db/migrations/003_voc.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/003_voc.sql)
+- [db/migrations/007_voc_signals_opportunities.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/007_voc_signals_opportunities.sql)
+- [db/migrations/008_product_area.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/008_product_area.sql)
 - [persistence.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/persistence.py)
 - [voc_taxonomy.yaml](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.yaml)
 - [voc_taxonomy.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.py)
@@ -149,6 +151,7 @@ Supabase est additif :
 - D1 reste la source calls existante
 - le pipeline pousse en plus `agents`, `calls`, `transcripts`, `evaluations`, `soft_skills`, `issues`, `daily_kpi_snapshot`, `llm_runs`
 - la couche VoC ajoute `voc_extracts`, `topic_mentions`, `entity_perceptions`, `verbatims`, `competitor_mentions`, `voc_signals`, `voc_taxonomy`
+- la couche VoC enrichie ajoute `agent_best_practices`, `product_area`, `caller_hash` et `resolution_status`
 - la couche pilotage ajoute `anomaly_events`, `shadow_runs` et des snapshots `daily_kpi_snapshot` par agent
 - si Supabase n'est pas configuré, le pipeline continue sans erreur bloquante
 
@@ -159,6 +162,7 @@ La QA agent et la VoC client sont volontairement séparées :
 - la VoC décrit ce que le client dit du produit, de la marque, des bornes ou du support
 - une citation VoC invalide est rejetée côté Python
 - les verbatims publiés sont anonymisés
+- le daily report passe par un registre `actionable_items` dédupliqué pour éviter les répétitions Slack / Markdown
 
 ## Runtime local vs repo source
 

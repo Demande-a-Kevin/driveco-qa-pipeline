@@ -14,6 +14,7 @@ import requests
 import config
 import qa_prompting
 import schemas
+import rubric
 
 log = logging.getLogger(__name__)
 
@@ -229,10 +230,11 @@ def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None)
         timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
         stats=stats,
     )
+    provisional_score = rubric.compute_weighted_score(scoring.score_map())
     voc_extract = None
     if config.ENABLE_VOC_ANALYSIS:
         voc_extract = _validated_chat(
-            qa_prompting.build_voc_messages(call),
+            qa_prompting.build_voc_messages(call, score_global=provisional_score),
             schemas.VoCExtract,
             max_tokens=1800,
             timeout=config.OLLAMA_ANALYSIS_TIMEOUT,

@@ -93,6 +93,9 @@ Useful logs:
 - be careful with line mappings and call scopes, especially UCC transfer handling
 - keep `daily_kpi_snapshot.agent_id = ''` for global snapshots when `scope = 'global'`
 - keep `RUN_DEGRADED_THRESHOLD` configurable and mark empty/low-retention daily reruns as `degraded`
+- keep the `actionable_items` principle: deduplicate repeated findings before rendering Slack / Markdown sections
+- preserve `caller_hash` for cohort analytics and avoid exposing raw phone numbers in dashboard-facing views
+- keep `resolution_status` and VoC `product_area` additive; do not mix them into the QA rubric itself
 - never commit secrets or local credential files
 
 ## External dependency

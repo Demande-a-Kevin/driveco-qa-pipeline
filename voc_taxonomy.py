@@ -43,6 +43,14 @@ def axis_label_map(axis: str) -> dict[str, str]:
     return {str(item["code"]): str(item.get("label") or item["code"]) for item in axis_items(axis)}
 
 
+def product_area_for_topic(code: str) -> str:
+    normalized_code, _ = normalize_taxonomy_code("topics", code)
+    for item in axis_items("topics"):
+        if str(item.get("code")) == normalized_code:
+            return str(item.get("product_area") or "other")
+    return "other"
+
+
 def normalize_taxonomy_code(axis: str, value: str) -> tuple[str, bool]:
     code = _slug(value)
     allowed = axis_codes(axis)
@@ -59,7 +67,13 @@ def taxonomy_prompt_block() -> str:
     lines = [f"Taxonomy version: {taxonomy_version()}"]
     for axis in ("topics", "entities", "aspects"):
         items = axis_items(axis)
-        labels = ", ".join(f"{item['code']} ({item.get('label', item['code'])})" for item in items)
+        if axis == "topics":
+            labels = ", ".join(
+                f"{item['code']} ({item.get('label', item['code'])}, area={item.get('product_area', 'other')})"
+                for item in items
+            )
+        else:
+            labels = ", ".join(f"{item['code']} ({item.get('label', item['code'])})" for item in items)
         lines.append(f"- {axis}: {labels}")
     lines.append("Si un item ne rentre pas dans la taxonomie, utilise autre_<texte_court>.")
     return "\n".join(lines)

@@ -11,6 +11,7 @@ import config
 import gdrive_uploader
 import notion_reporter
 import call_fetcher
+import report_formatter
 
 OUTPUT = config.REPORT_OUTPUT_DIR
 
@@ -377,6 +378,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     issues = analysis.get("top_issues", [])
     recs   = analysis.get("recommendations", [])
     evaluation_index = _build_evaluation_index(analysis)
+    actionable_items = analysis.get("actionable_items") or report_formatter.build_actionable_items(analysis)
+    analysis["actionable_items"] = actionable_items
 
     ucc_score = scores.get("ucc_quality_score", "?")
     drv_score = scores.get("driveco_care_score", "?")
@@ -440,24 +443,26 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                 {"type": "mrkdwn", "text": f"*Escalades détectées*\n{escalations} (tags UCC : {warm_transfers})"},
             ],
         },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Ligne assistance 785174*\n{assistance_presented} appel(s) entrants"},
-                {"type": "mrkdwn", "text": f"*Transférés à UCC via IVR charging assistance*\n{assistance_charging_count} appel(s) — {assistance_charging_pct}%"},
-                {"type": "mrkdwn", "text": f"*Ligne UCC transfert 1214611*\n{transfer_presented} appel(s) entrants"},
-                {"type": "mrkdwn", "text": f"*Taux décroché ligne 1214611*\n{transfer_pickup_pct}%"},
-                {"type": "mrkdwn", "text": f"*Éligibles QA*\n{eligible_calls if eligible_calls is not None else 'n/a'} appel(s) (UCC {eligible_ucc_calls if eligible_ucc_calls is not None else 'n/a'} / Driveco {eligible_driveco_calls if eligible_driveco_calls is not None else 'n/a'})"},
-                {"type": "mrkdwn", "text": f"*Analysés / couverture*\n{analyzed_calls if analyzed_calls is not None else 'n/a'} appel(s) — {actual_coverage if actual_coverage is not None else 'n/a'}% / cible {target_coverage if target_coverage is not None else 'n/a'}% (UCC {analyzed_ucc_calls if analyzed_ucc_calls is not None else 'n/a'} / Driveco {analyzed_driveco_calls if analyzed_driveco_calls is not None else 'n/a'})"},
-                {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
-            ],
-        },
-        {"type": "divider"},
+        *([] if mode == "daily" else [
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Ligne assistance 785174*\n{assistance_presented} appel(s) entrants"},
+                    {"type": "mrkdwn", "text": f"*Transférés à UCC via IVR charging assistance*\n{assistance_charging_count} appel(s) — {assistance_charging_pct}%"},
+                    {"type": "mrkdwn", "text": f"*Ligne UCC transfert 1214611*\n{transfer_presented} appel(s) entrants"},
+                    {"type": "mrkdwn", "text": f"*Taux décroché ligne 1214611*\n{transfer_pickup_pct}%"},
+                    {"type": "mrkdwn", "text": f"*Éligibles QA*\n{eligible_calls if eligible_calls is not None else 'n/a'} appel(s) (UCC {eligible_ucc_calls if eligible_ucc_calls is not None else 'n/a'} / Driveco {eligible_driveco_calls if eligible_driveco_calls is not None else 'n/a'})"},
+                    {"type": "mrkdwn", "text": f"*Analysés / couverture*\n{analyzed_calls if analyzed_calls is not None else 'n/a'} appel(s) — {actual_coverage if actual_coverage is not None else 'n/a'}% / cible {target_coverage if target_coverage is not None else 'n/a'}% (UCC {analyzed_ucc_calls if analyzed_ucc_calls is not None else 'n/a'} / Driveco {analyzed_driveco_calls if analyzed_driveco_calls is not None else 'n/a'})"},
+                    {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
+                ],
+            },
+            {"type": "divider"},
+        ]),
     ]
 
     # ── Routage IVR ─────────────────────────────────────────────────────────
     ivr_scope_calls = [c for c in assistance_scope_calls if not _is_maintenance_call(c)]
-    if ivr_scope_calls:
+    if mode != "daily" and ivr_scope_calls:
         ivr_counts = Counter(
             c.get("ivr_branch")
             for c in ivr_scope_calls
@@ -486,7 +491,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         blocks.append({"type": "divider"})
 
     transcript_reasons = _build_transcript_reason_summary(analysis)
-    if transcript_reasons:
+    if mode != "daily" and transcript_reasons:
         reason_lines = [f"• {label} — {count} occurrence(s)" for label, count in transcript_reasons]
         blocks.append({
             "type": "section",
@@ -497,6 +502,10 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     voc_summary = analysis.get("voc_summary") or {}
     top_topics = voc_summary.get("top_topics") or []
     weak_signals = voc_summary.get("weak_signals") or []
+    opportunities = voc_summary.get("opportunities") or []
+    best_practices = voc_summary.get("best_practices") or []
+    positive_satisfaction = voc_summary.get("positive_satisfaction") or {}
+    competitors = voc_summary.get("competitors") or []
     if top_topics:
         topic_lines = [
             f"• *{item.get('label', item.get('topic_code'))}* — {item.get('count', 0)} mention(s)"
@@ -513,8 +522,43 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         })
         blocks.append({"type": "divider"})
 
+    if opportunities:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*💡 Opportunités détectées :*\n" + "\n".join(
+                f"• {item.get('description')} — {item.get('count', 0)} occurrence(s)" for item in opportunities[:5]
+            )},
+        })
+        blocks.append({"type": "divider"})
+
+    if best_practices:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*✨ Bonnes pratiques agents :*\n" + "\n".join(
+                f"• Agent anonymisé — « {item.get('quote')} »" for item in best_practices[:3]
+            )},
+        })
+        blocks.append({"type": "divider"})
+
+    if positive_satisfaction.get("count"):
+        sample = positive_satisfaction.get("sample_quote") or "verbatim indisponible"
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*🌱 Satisfaction positive :* {positive_satisfaction.get('count', 0)} appel(s)\n• « {sample} »"},
+        })
+        blocks.append({"type": "divider"})
+
+    if competitors:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*👀 Concurrents cités :*\n" + "\n".join(
+                f"• {item.get('competitor_name')} — {item.get('count', 0)} mention(s)" for item in competitors[:4]
+            )},
+        })
+        blocks.append({"type": "divider"})
+
     # ── Clients frustrés (appels répétés) ────────────────────────────────────
-    if assistance_scope_calls:
+    if mode != "daily" and assistance_scope_calls:
         repeat_stats = _repeat_call_resolution_stats(assistance_scope_calls)
         repeat = repeat_stats["entries"]
         if repeat:
@@ -534,7 +578,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             })
 
     # ── Pics d'appels ───────────────────────────────────────────────────────
-    if peak_windows:
+    if mode != "daily" and peak_windows:
         peak_lines = [
             f"• *{window.get('label', '?')}* — {window.get('count', 0)} appel(s)"
             for window in peak_windows[:3]
@@ -546,7 +590,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         blocks.append({"type": "divider"})
 
     # ── Appels longs UCC (≥ 15 min) ─────────────────────────────────────────
-    if ucc_calls:
+    if mode != "daily" and ucc_calls:
         threshold = config.LONG_CALL_THRESHOLD_SECONDS
         long_pool = [
             c for c in ucc_calls
@@ -579,7 +623,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     top_prob = analysis.get("top_problematic_calls", [])
     if top_prob:
         lines_prob = []
-        for ev in top_prob[:5]:
+        limit = 2 if mode == "daily" else 5
+        for ev in top_prob[:limit]:
             cid       = ev.get("call_id_internal") or ev.get("call_id", "?")
             score_txt = ""
             try:
@@ -615,10 +660,11 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         })
 
     # ── Alertes ─────────────────────────────────────────────────────────────
+    alert_items = [item for item in actionable_items if item.get("priority") == "critical" and item.get("source") == "anomaly"]
     critical = [a for a in alerts if a.get("level") == "critical"]
     warnings = [a for a in alerts if a.get("level") == "warning"]
-    if critical or warnings:
-        alert_lines = (
+    if critical or warnings or alert_items:
+        alert_lines = [f"🔴 {item.get('description')}" for item in alert_items[:5]] + (
             [f"🔴 {a.get('message')}" for a in critical] +
             [f"🟡 {a.get('message')}" for a in warnings]
         )
@@ -627,46 +673,27 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             "text": {"type": "mrkdwn", "text": f"*Alertes :*\n" + "\n".join(alert_lines)},
         })
 
-    if issues:
-        issue_lines = []
-        for issue in issues[:3]:
-            label = _normalize_issue_text(issue.get("issue"))
-            count = issue.get("occurrences", "?")
-            if label:
-                issue_lines.append(f"• {label} — {count} occurrence(s)")
-        if issue_lines:
-            blocks.append({"type": "divider"})
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "*Enseignements du jour :*\n" + "\n".join(issue_lines)},
-            })
-
     # ── Knowledge Base gaps ─────────────────────────────────────────────────
-    missing    = _normalize_kb_items(kb.get("missing", []), "missing")
-    incomplete = _normalize_kb_items(kb.get("incomplete", []), "incomplete")
-    to_revise  = _normalize_kb_items(kb.get("to_revise", []), "to_revise")
-    total_gaps = len(missing) + len(incomplete) + len(to_revise)
-    if total_gaps:
-        kb_lines = (
-            [f"➕ *Manquant :* {a}" for a in missing[:2]] +
-            [f"✏️ *Incomplet :* {a}" for a in incomplete[:2]] +
-            [f"🔄 *À réviser :* {a}" for a in to_revise[:2]]
-        )
+    kb_items = [item for item in actionable_items if item.get("tag") == "kb"]
+    if kb_items:
+        kb_lines = [f"• {item.get('description')}" for item in kb_items[:5]]
         blocks.append({"type": "divider"})
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f"*📚 KB — {total_gaps} gap(s) identifié(s) :*\n" + "\n".join(kb_lines)},
+                     "text": f"*📚 KB :*\n" + "\n".join(kb_lines)},
         })
 
-    if recs:
-        rec_lines = [f"• {_normalize_issue_text(rec)}" for rec in recs[:3] if _normalize_issue_text(rec)]
-        if rec_lines:
-            blocks.append({"type": "divider"})
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "*Actions recommandées :*\n" + "\n".join(rec_lines)},
-            })
+    coaching_items = [item for item in actionable_items if item.get("tag") == "coaching"]
+    focus_items = [item for item in coaching_items if item.get("description") not in {x.get("description") for x in coaching_items[:5]}]
+    if focus_items:
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Focus coaching du jour :*\n" + "\n".join(
+                f"• {item.get('description')}" for item in focus_items[:3]
+            )},
+        })
 
     if llm_usage:
         blocks.append({"type": "divider"})

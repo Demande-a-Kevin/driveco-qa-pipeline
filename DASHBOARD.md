@@ -13,6 +13,8 @@
 - `db/migrations/004_metrics_agent.sql`
 - `db/migrations/005_reliability.sql`
 - `db/migrations/006_views.sql`
+- `db/migrations/007_voc_signals_opportunities.sql`
+- `db/migrations/008_product_area.sql`
 
 ## Variables utiles
 
@@ -26,6 +28,7 @@
 1. `Overview`
    - vue principale : `v_kpi_trend_daily`
    - query : `select * from public.v_kpi_trend_daily where scope = 'global' order by date desc;`
+   - datapoints clés : `fcr_rate`, `coverage_pct`, `repeat_caller_rate`, `avg_soft_score`
 
 2. `Agents`
    - vue principale : `v_agent_scorecard_30d`
@@ -59,6 +62,7 @@
    - `select * from public.v_voc_churn_risk_feed_7d order by started_at desc;`
    - `select * from public.v_voc_opportunities_ranked order by opportunity_score desc;`
    - `select * from public.v_voc_competitors_watch order by week_start desc, mentions desc;`
+   - `select day, topic_code, mentions, avg_sentiment from public.v_voc_topics_trend_28d order by day desc;`
 
 ## Metabase Docker
 

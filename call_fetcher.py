@@ -3,6 +3,7 @@ call_fetcher.py — Récupère les appels depuis le worker Cloudflare (call-hist
 Fallback : API Aircall directe si le worker est indisponible.
 """
 from datetime import datetime
+from hashlib import sha256
 import time
 import requests
 import d1_client
@@ -68,6 +69,9 @@ def _normalize_call(c: dict) -> dict:
     )
     call_started_at = _parse_datetime(started_raw)
 
+    from_number = c.get("from_number") or c.get("from") or c.get("fromNumber") or ""
+    customer_number = c.get("Customer number") or c.get("customer_number") or c.get("to") or ""
+    phone_e164 = _normalize_phone_e164(from_number or customer_number)
     return {
         "call_id_internal": c.get("call_id_internal") or c.get("Call id (internal)") or c.get("id"),
         "call_id":          str(c.get("call_id") or c.get("Call id") or c.get("callId") or ""),
@@ -101,8 +105,10 @@ def _normalize_call(c: dict) -> dict:
         "recording_url":    c.get("recording_url") or c.get("Recording") or c.get("recordingUrl") or "",
         "user_name":        c.get("user_name") or c.get("user") or c.get("userName") or "",
         "agents_solicited": c.get("agents_solicited") or c.get("agentsSolicited") or "",
-        "from_number":      c.get("from_number") or c.get("from") or c.get("fromNumber") or "",
-        "customer_number":  c.get("Customer number") or c.get("customer_number") or c.get("to") or "",
+        "from_number":      from_number,
+        "customer_number":  customer_number,
+        "phone_e164":       phone_e164,
+        "caller_hash":      _caller_hash(phone_e164),
         "call_started_at":  call_started_at,
         "call_timeline":    c.get("call_timeline") or c.get("Call Timeline") or c.get("callTimeline") or "",
     }
@@ -168,6 +174,23 @@ def _parse_wait(val) -> int:
         return int(val)
     except (TypeError, ValueError):
         return 0
+
+
+def _normalize_phone_e164(value) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not digits:
+        return ""
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0"):
+        digits = f"33{digits[1:]}"
+    return f"+{digits}"
+
+
+def _caller_hash(phone_e164: str) -> str:
+    if not phone_e164:
+        return ""
+    return sha256(phone_e164.encode("utf-8")).hexdigest()[:12]
 
 
 def fetch_transcript(call_id: str) -> str | None:

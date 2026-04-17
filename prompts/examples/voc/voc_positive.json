@@ -8,6 +8,7 @@
     "topics": [
       {
         "topic_code": "feedback_positif",
+        "product_area": "support",
         "sentiment": "très_positif",
         "severity": 1,
         "quote": "la charge a redémarré rapidement et votre support a été clair",
@@ -15,6 +16,7 @@
       },
       {
         "topic_code": "recommandation",
+        "product_area": "support",
         "sentiment": "très_positif",
         "severity": 1,
         "quote": "Je vais recommander Driveco à mon collègue",
@@ -35,6 +37,7 @@
     "satisfaction_signal": "positif",
     "churn_risk_signal": "aucun",
     "expansion_signal": true,
+    "resolution_status": "resolved",
     "competitor_mentions": [],
     "verbatim_quotes": [
       {
@@ -46,6 +49,17 @@
       }
     ],
     "unmet_needs": [],
-    "product_ideas": []
+    "product_ideas": [
+      "Permettre au client de partager facilement une borne recommandée à un collègue"
+    ],
+    "best_practice_moments": [
+      {
+        "quote": "votre support a été clair",
+        "timestamp_s": null,
+        "speaker": "client",
+        "topic_code": "feedback_positif",
+        "sentiment": "très_positif"
+      }
+    ]
   }
 }

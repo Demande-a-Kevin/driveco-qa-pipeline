@@ -8,6 +8,7 @@
     "topics": [
       {
         "topic_code": "app_bug",
+        "product_area": "app",
         "sentiment": "très_négatif",
         "severity": 5,
         "quote": "votre application plante une fois sur deux",
@@ -15,6 +16,7 @@
       },
       {
         "topic_code": "borne_hs_terrain",
+        "product_area": "hardware",
         "sentiment": "très_négatif",
         "severity": 5,
         "quote": "la borne du parking est encore hors service",
@@ -42,6 +44,7 @@
     "satisfaction_signal": "négatif",
     "churn_risk_signal": "élevé",
     "expansion_signal": false,
+    "resolution_status": "unresolved",
     "competitor_mentions": [
       {
         "competitor_name": "Electra",
@@ -65,10 +68,14 @@
         "sentiment": "négatif"
       }
     ],
+    "best_practice_moments": [],
     "unmet_needs": [
       "Une application stable pour lancer la charge sans erreur",
       "Une borne disponible sur le site habituel"
     ],
-    "product_ideas": []
+    "product_ideas": [
+      "Afficher un statut de disponibilité plus fiable avant déplacement",
+      "Ajouter une alerte proactive quand une borne favorite est hors service"
+    ]
   }
 }

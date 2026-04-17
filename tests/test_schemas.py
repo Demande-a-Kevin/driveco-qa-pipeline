@@ -67,6 +67,51 @@ class SchemaValidationTest(unittest.TestCase):
         self.assertEqual(payload["call_id"], "1")
         self.assertEqual(payload["classified_type"], "ucc_handled")
 
+    def test_resolution_status_accepts_expected_values(self):
+        for value in ("resolved", "escalated", "pending"):
+            with self.subTest(value=value):
+                extract = schemas.FactualExtract.model_validate(
+                    {
+                        "call_id": "1",
+                        "classified_type": "ucc_handled",
+                        "customer_call_reason": "Charge interrompue",
+                        "transcript_usable": True,
+                        "kb_compliance": {"status": "conforme", "article": "KB-1", "rationale": "ok"},
+                        "positives": [],
+                        "improvement_points": [],
+                        "alerts": [],
+                        "procedural_steps_followed": [],
+                        "emotional_signals": [],
+                        "resolution_status": value,
+                    }
+                )
+                self.assertEqual(extract.resolution_status, value)
+
+    def test_voc_best_practice_moments_are_limited(self):
+        voc = schemas.VoCExtract.model_validate(
+            {
+                "topics": [],
+                "entity_perceptions": [],
+                "customer_emotions": ["satisfaction"],
+                "effort_score": 1,
+                "satisfaction_signal": "positif",
+                "churn_risk_signal": "aucun",
+                "expansion_signal": True,
+                "resolution_status": "resolved",
+                "competitor_mentions": [],
+                "verbatim_quotes": [],
+                "best_practice_moments": [
+                    {"quote": "Le support a été très clair", "timestamp_s": None, "speaker": "client", "topic_code": "feedback_positif", "sentiment": "très_positif"}
+                ],
+                "unmet_needs": [],
+                "product_ideas": [],
+                "taxonomy_version": "voc_taxonomy_v1",
+                "needs_taxonomy_review": False,
+                "validation_warnings": [],
+            }
+        )
+        self.assertEqual(len(voc.best_practice_moments), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
