@@ -1,0 +1,68 @@
+{
+  "call": {
+    "call_id_internal": "3644887559",
+    "classified_type": "ucc_handled",
+    "duration_in_call": 937,
+    "transcript": "[Client] Oui, bonjour madame. Ça fait plusieurs fois que j'essaie de me brancher. [Agent] D'accord, alors attendez madame, je vais regarder. [Client] Je n'ai plus de batterie. [Agent] Oui, oui oui, je comprends bien. [Agent] J'essaye de redémarrer la borne."
+  },
+  "factual_extract": {
+    "call_id": "3644887559",
+    "classified_type": "ucc_handled",
+    "customer_call_reason": "Recharge impossible",
+    "transcript_usable": true,
+    "kb_compliance": {
+      "status": "partiel",
+      "article": "START - Unable to start (Web)App Driveco",
+      "rationale": "Le diagnostic démarre mais reste incomplet."
+    },
+    "positives": [
+      {
+        "text": "L'agent reconnaît la gêne du client",
+        "citation": "oui oui oui, je comprends bien"
+      },
+      {
+        "text": "L'agent lance une action concrète",
+        "citation": "j'essaye de redémarrer la borne"
+      }
+    ],
+    "improvement_points": [
+      {
+        "text": "L'investigation reste insuffisante avant action",
+        "citation": "attendez madame, je vais regarder"
+      }
+    ],
+    "alerts": [
+      {
+        "level": "warning",
+        "message": "Diagnostic incomplet avant action",
+        "call_ids": [
+          "3644887559"
+        ]
+      }
+    ],
+    "procedural_steps_followed": [
+      "Tentative de redémarrage borne"
+    ],
+    "emotional_signals": [
+      "inquiétude"
+    ]
+  },
+  "scorecard": {
+    "accueil": 5,
+    "ecoute_active": 6,
+    "empathie": 8,
+    "gestion_tension": 7,
+    "professionnalisme": 6,
+    "clarte_communication": 7,
+    "orientation_solution": 7,
+    "cloture": 5,
+    "qualification_investigation": 4,
+    "kb_application": 5,
+    "observations": "Bonne empathie et action rapide, mais le diagnostic aurait dû être mieux qualifié."
+  },
+  "expected": {
+    "score_global": 6.2,
+    "errors_count": 1,
+    "warnings_count": 0
+  }
+}

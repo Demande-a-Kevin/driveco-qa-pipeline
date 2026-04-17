@@ -9,6 +9,7 @@ Elle sert à :
 - normaliser et classifier les appels
 - récupérer les transcripts Aircall AI pour un sous-ensemble d'appels
 - analyser la qualité des appels avec Ollama local
+- extraire séparément la voix du client à partir des mêmes transcripts
 - produire un rapport Markdown, Slack et Notion
 
 ## Vue d'ensemble
@@ -22,6 +23,9 @@ Aircall
   -> enrichissement transcripts Aircall AI
   -> analysis_pipeline.py
   -> Ollama local (Gemma 4)
+  -> passe VoC dédiée
+  -> persistence.py
+  -> Supabase (Postgres analytique, additif)
   -> consolidation fallback local
   -> report_formatter.py / notifier.py / notion_reporter.py
   -> Markdown local + Slack + Notion
@@ -64,29 +68,37 @@ Le transcript enrichi est utilisé pour :
 - la raison d'appel
 - les soft skills
 - l'évaluation procédure / KB
+- la VoC client : topics, verbatims, churn risk, perception produit
 
 Le champ `Call Timeline` est conservé comme trace, mais ce n'est pas la source transcript principale.
 
 ### 4. Orchestration
 
 - [analysis_pipeline.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/analysis_pipeline.py)
+- [persistence.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/persistence.py)
 
 Modes :
 - `daily`
 - `weekly`
+- `reliability`
 - `test`
 - `benchmark` via [run_from_cron.sh](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/run_from_cron.sh)
 
 Étapes du `daily` :
 1. récupération des appels du jour
 2. classification métier
-3. calcul des KPIs globaux
-4. sélection de `75%` des appels analysables
-5. enrichissement transcript
-6. pre-screening Ollama
-7. analyse batchée Ollama
-8. consolidation locale
-9. génération des sorties
+3. persistance additif calls / agents vers Supabase si configuré
+4. calcul des KPIs globaux
+5. sélection de `75%` des appels analysables
+6. enrichissement transcript
+7. persistance transcripts vers Supabase si configuré
+8. pre-screening Ollama
+9. analyse batchée Ollama QA : extraction -> scoring
+10. passe VoC Ollama séparée
+11. persistance évaluations + snapshots + llm_runs vers Supabase si configuré
+12. purge rétention verbatims VoC
+13. consolidation locale
+14. génération des sorties
 
 ### 5. LLM
 
@@ -97,7 +109,8 @@ Modes :
 État actuel :
 - modèle local principal : `gemma4:latest`
 - pre-screening : Ollama local
-- analyse : Ollama local
+- analyse QA : Ollama local
+- analyse VoC : Ollama local, séparée de la QA agent
 - Anthropic : présent dans le code, mais actuellement désactivé en pratique par manque de crédit
 
 Important :
@@ -115,8 +128,37 @@ Important :
 Sorties possibles :
 - Markdown local dans `qa-driveco-data/`
 - Slack
+- Slack `VoC alerts` si configuré
 - Notion
 - Google Drive si les credentials existent
+
+### 7. Persistance analytique
+
+- [db/migrations/001_init.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/001_init.sql)
+- [db/migrations/004_metrics_agent.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/004_metrics_agent.sql)
+- [db/migrations/005_reliability.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/005_reliability.sql)
+- [db/migrations/002_views.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/002_views.sql)
+- [db/migrations/003_voc.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/003_voc.sql)
+- [persistence.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/persistence.py)
+- [voc_taxonomy.yaml](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.yaml)
+- [voc_taxonomy.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.py)
+- [reliability.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/reliability.py)
+- [health_server.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/health_server.py)
+
+Supabase est additif :
+- D1 reste la source calls existante
+- le pipeline pousse en plus `agents`, `calls`, `transcripts`, `evaluations`, `soft_skills`, `issues`, `daily_kpi_snapshot`, `llm_runs`
+- la couche VoC ajoute `voc_extracts`, `topic_mentions`, `entity_perceptions`, `verbatims`, `competitor_mentions`, `voc_signals`, `voc_taxonomy`
+- la couche pilotage ajoute `anomaly_events`, `shadow_runs` et des snapshots `daily_kpi_snapshot` par agent
+- si Supabase n'est pas configuré, le pipeline continue sans erreur bloquante
+
+## Séparation QA vs VoC
+
+La QA agent et la VoC client sont volontairement séparées :
+- la QA juge la qualité de traitement de l'agent
+- la VoC décrit ce que le client dit du produit, de la marque, des bornes ou du support
+- une citation VoC invalide est rejetée côté Python
+- les verbatims publiés sont anonymisés
 
 ## Runtime local vs repo source
 
@@ -159,6 +201,7 @@ Jobs `launchd` :
 - benchmark : `01:30`
 - daily : `05:15`
 - watchdog daily : `06:45`
+- reliability : lundi `04:00`
 - weekly : lundi `07:15`
 
 ## Données locales

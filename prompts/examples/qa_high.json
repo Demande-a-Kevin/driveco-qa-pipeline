@@ -1,0 +1,47 @@
+{
+  "request": {
+    "call_id": "example-high",
+    "classified_type": "ucc_handled",
+    "factual_extract": {
+      "customer_call_reason": "Borne indisponible",
+      "transcript_usable": true,
+      "kb_compliance": {
+        "status": "conforme",
+        "article": "START - Unable to start Interop",
+        "rationale": "Le parcours est suivi et une alternative concrète est proposée."
+      },
+      "positives": [
+        {
+          "text": "L'agent reformule le problème et rassure",
+          "citation": "oui oui je comprends bien"
+        },
+        {
+          "text": "L'agent enclenche une action concrète rapidement",
+          "citation": "j'essaye de redémarrer la borne"
+        }
+      ],
+      "improvement_points": [],
+      "alerts": [],
+      "procedural_steps_followed": [
+        "Identification de la borne",
+        "Tentative d'action corrective",
+        "Vérification du retour client"
+      ],
+      "emotional_signals": [
+        "inquiétude"
+      ]
+    }
+  },
+  "response": {
+    "accueil": 8,
+    "ecoute_active": 8,
+    "empathie": 8,
+    "gestion_tension": 8,
+    "professionnalisme": 8,
+    "clarte_communication": 8,
+    "orientation_solution": 9,
+    "cloture": 7,
+    "qualification_investigation": 8,
+    "kb_application": 8,
+    "observations": "L'agent reste rassurant, mène un diagnostic utile et donne une solution concrète rapidement."
+  }

@@ -1,0 +1,111 @@
+version: voc_taxonomy_v1
+
+topics:
+  - code: facturation
+    label: Facturation
+  - code: borne_hs_terrain
+    label: Borne HS terrain
+  - code: borne_indisponible
+    label: Borne indisponible
+  - code: borne_occupee
+    label: Borne occupée
+  - code: demarrage_charge
+    label: Démarrage de charge
+  - code: interruption_charge
+    label: Interruption de charge
+  - code: app_bug
+    label: Bug application
+  - code: app_connexion
+    label: Connexion application
+  - code: app_paiement
+    label: Paiement application
+  - code: carte_rfid
+    label: Carte RFID
+  - code: itinerance
+    label: Itinérance
+  - code: abonnement
+    label: Abonnement
+  - code: resiliation
+    label: Résiliation
+  - code: compte_acces
+    label: Compte et accès
+  - code: mot_de_passe
+    label: Mot de passe
+  - code: tarification
+    label: Tarification
+  - code: remboursement
+    label: Remboursement
+  - code: communication_panne
+    label: Communication de panne
+  - code: suivi_ticket
+    label: Suivi ticket
+  - code: temps_attente
+    label: Temps d'attente
+  - code: qualite_support
+    label: Qualité du support
+  - code: installation_privee
+    label: Installation privée
+  - code: sav_physique
+    label: SAV physique
+  - code: question_produit
+    label: Question produit
+  - code: disponibilite_reseau
+    label: Disponibilité réseau
+  - code: localisation_borne
+    label: Localisation borne
+  - code: retard_intervention
+    label: Retard d'intervention
+  - code: bug_bluetooth
+    label: Bug Bluetooth
+  - code: qr_code
+    label: QR code
+  - code: badge_tiers
+    label: Badge tiers
+  - code: feedback_positif
+    label: Feedback positif
+  - code: recommandation
+    label: Recommandation
+  - code: suggestion_produit
+    label: Suggestion produit
+
+entities:
+  - code: driveco_marque
+    label: Driveco marque
+  - code: app_mobile
+    label: App mobile
+  - code: borne_materielle
+    label: Borne matérielle
+  - code: support_client
+    label: Support client
+  - code: operateur_tiers
+    label: Opérateur tiers
+  - code: installateur
+    label: Installateur
+  - code: site_web
+    label: Site web
+  - code: processus_facturation
+    label: Processus facturation
+  - code: reseau_recharge
+    label: Réseau de recharge
+  - code: abonnement_service
+    label: Abonnement service
+
+aspects:
+  - code: fiabilite
+    label: Fiabilité
+  - code: rapidite
+    label: Rapidité
+  - code: clarte
+    label: Clarté
+  - code: prix
+    label: Prix
+  - code: ergonomie
+    label: Ergonomie
+  - code: disponibilite
+    label: Disponibilité
+  - code: service
+    label: Service
+  - code: transparence
+    label: Transparence
+  - code: autonomie
+    label: Autonomie

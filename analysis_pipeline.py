@@ -2,9 +2,9 @@
 analysis_pipeline.py — Orchestrateur principal du pipeline QA Driveco.
 
 Routing LLM :
-  Ollama (local, Gemma 4)     → pre-screening + batch analyse des appels à risque moyen
-  Claude Haiku                → daily consolidation + re-évaluation des appels très problématiques
-  Claude Sonnet               → rapport hebdomadaire (consolidation + tendances)
+  Ollama (local, Gemma 4)     → pre-screening + analyse QA stricte extraction -> scoring
+  Claude Haiku                → fallback optionnel + consolidation daily si activée
+  Claude Sonnet               → consolidation hebdomadaire si activée
 
 Usage :
   python analysis_pipeline.py --mode daily [--date 2026-03-24]
@@ -16,9 +16,10 @@ import json
 import argparse
 import logging
 import math
+import random
 import time
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 def _write_bootstrap_log() -> None:
@@ -41,10 +42,12 @@ import metrics_builder
 import notion_kb_fetcher
 import llm_client
 import ollama_client
+import reliability
 import report_formatter
 import notifier
 import d1_client
 import config
+import persistence
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -71,6 +74,7 @@ CLAUDE_HIGH_RISK_MAX_TOKENS = 1200
 CLAUDE_CONSOLIDATION_MAX_TOKENS = 900
 ENABLE_CLAUDE_LOW_RISK_FALLBACK = False
 ENABLE_CLAUDE_MEDIUM_RISK_FALLBACK = False
+ENABLE_CLAUDE_HIGH_RISK_FALLBACK = False
 ENABLE_CLAUDE_GLOBAL_FALLBACK = False
 
 
@@ -676,13 +680,13 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                               kb_summary: str, consolidation_model: str,
                               mode: str = "daily") -> dict:
     """
-    Analyse calls_to_analyze via routing Ollama → Haiku :
+    Analyse calls_to_analyze via routing Ollama prioritaire :
 
     1. Pre-screening Ollama (risk 0-10) sur tous les appels sélectionnés
     2. Appels risque faible (<= OLLAMA_RISK_THRESHOLD) : analyse Ollama batch
-    3. Appels risque élevé (>= HAIKU_REEVAL_THRESHOLD) : analyse Haiku batch
-    4. Appels risque moyen : Ollama si dispo, sinon Haiku
-    5. Consolidation finale : consolidation_model (Haiku pour daily, Sonnet pour weekly),
+    3. Appels risque élevé (>= HAIKU_REEVAL_THRESHOLD) : analyse Ollama batch
+    4. Fallback Anthropic uniquement si explicitement activé
+    5. Consolidation finale : consolidation_model,
        désactivable par config pour rester en local-only.
     """
     # ── Étape 1 : Pre-screening ───────────────────────────────────────────────
@@ -722,16 +726,8 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                 else:
                     if ENABLE_CLAUDE_LOW_RISK_FALLBACK:
                         log.info(f"    Ollama échoué → fallback Claude activé pour ce batch ({len(batch)} appels)")
-                        prompt = build_batch_prompt(date, batch, batch_kb_summary, i // OLLAMA_BATCH_SIZE + 1, batch_n)
-                        result = safe_llm_analyze(
-                            SYSTEM_PROMPT, prompt,
-                            model=llm_client.get_model_standard(), max_tokens=CLAUDE_BATCH_MAX_TOKENS,
-                            context="low_risk_fallback_batch",
-                            usage_stats=llm_usage,
-                        )
-                        all_evaluations.extend(
-                            sanitize_call_evaluations(result.get("call_evaluations", []), context="low_risk_fallback")
-                        )
+                        evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_standard())
+                        all_evaluations.extend(sanitize_call_evaluations(evals, context="low_risk_fallback"))
                     else:
                         log.info(f"    Ollama échoué → batch faible ignoré pour limiter le coût token ({len(batch)} appels)")
         else:
@@ -757,43 +753,34 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                 else:
                     if ENABLE_CLAUDE_MEDIUM_RISK_FALLBACK:
                         log.info(f"    Ollama échoué → fallback Claude activé pour ce batch ({len(batch)} appels)")
-                        prompt = build_batch_prompt(date, batch, batch_kb_summary, i // OLLAMA_BATCH_SIZE + 1, batch_n)
-                        result = safe_llm_analyze(
-                            SYSTEM_PROMPT, prompt,
-                            model=llm_client.get_model_standard(), max_tokens=CLAUDE_BATCH_MAX_TOKENS,
-                            context="medium_risk_fallback_batch",
-                            usage_stats=llm_usage,
-                        )
-                        all_evaluations.extend(
-                            sanitize_call_evaluations(result.get("call_evaluations", []), context="medium_risk_fallback")
-                        )
+                        evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_standard())
+                        all_evaluations.extend(sanitize_call_evaluations(evals, context="medium_risk_fallback"))
                     else:
                         log.info(f"    Ollama échoué → batch moyen ignoré pour limiter le coût token ({len(batch)} appels)")
         else:
             log.info(f"  [routing] Ollama indisponible → appels risque moyen ignorés pour limiter le coût ({len(medium_risk)})")
 
-    # ── Étape 4 : Appels à haut risque → toujours Haiku ─────────────────────
+    # ── Étape 4 : Appels à haut risque → Ollama, puis fallback Anthropic si activé ──
     if high_risk:
-        log.info(f"  [Haiku] Re-évaluation {len(high_risk)} appels haut risque (>= {config.HAIKU_REEVAL_THRESHOLD})...")
-        batch_size = BATCH_SIZE if any(c.get("transcript") for c in high_risk) else BATCH_SIZE_META
+        log.info(f"  [Ollama] Analyse {len(high_risk)} appels haut risque (>= {config.HAIKU_REEVAL_THRESHOLD})...")
+        batch_size = max(1, min(OLLAMA_BATCH_SIZE, 2))
         batch_n = (len(high_risk) + batch_size - 1) // batch_size
         for i in range(0, len(high_risk), batch_size):
-            if i > 0:
-                log.info(f"  [rate-limit] Pause 20s avant batch suivant...")
-                time.sleep(20)
             batch = high_risk[i:i + batch_size]
-            log.info(f"  Batch Haiku (haut risque) {i // batch_size + 1}/{batch_n} — {len(batch)} appels...")
+            log.info(f"  Batch Ollama (haut risque) {i // batch_size + 1}/{batch_n} — {len(batch)} appels...")
             batch_kb_summary = get_batch_kb_excerpt(batch)
-            prompt = build_batch_prompt(date, batch, batch_kb_summary, i // batch_size + 1, batch_n)
-            result = safe_llm_analyze(
-                SYSTEM_PROMPT, prompt,
-                model=llm_client.get_model_flagged(), max_tokens=CLAUDE_HIGH_RISK_MAX_TOKENS,
-                context="high_risk_haiku_batch",
-                usage_stats=llm_usage,
+            evals = ollama_client.analyze_batch(
+                SYSTEM_PROMPT, batch, batch_kb_summary,
+                date.strftime("%d/%m/%Y"),
+                batch_num=i // batch_size + 1,
+                total_batches=batch_n,
             )
-            evals = sanitize_call_evaluations(result.get("call_evaluations", []), context="high_risk_haiku")
+            if not evals and ENABLE_CLAUDE_HIGH_RISK_FALLBACK:
+                log.info(f"    Ollama échoué → fallback Claude activé pour batch haut risque ({len(batch)} appels)")
+                evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_flagged())
+            evals = sanitize_call_evaluations(evals, context="high_risk_batch")
             all_evaluations.extend(evals)
-            log.info(f"    → {len(evals)} évaluations Haiku (haut risque)")
+            log.info(f"    → {len(evals)} évaluations retenues (haut risque)")
 
     # ── Étape 5 : Fallback Haiku garanti si 0 évaluations ────────────────────
     # Si Ollama a échoué sur tous les batches, on analyse au minimum un
@@ -808,14 +795,8 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                     time.sleep(20)
                 batch = calls_to_analyze[i:i + BATCH_SIZE]
                 batch_kb_summary = get_batch_kb_excerpt(batch)
-                prompt = build_batch_prompt(date, batch, batch_kb_summary, i // BATCH_SIZE + 1, batch_n)
-                result = safe_llm_analyze(
-                    SYSTEM_PROMPT, prompt,
-                    model=llm_client.get_model_standard(), max_tokens=CLAUDE_BATCH_MAX_TOKENS,
-                    context="global_fallback_batch",
-                    usage_stats=llm_usage,
-                )
-                evals = sanitize_call_evaluations(result.get("call_evaluations", []), context="global_fallback")
+                evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_standard())
+                evals = sanitize_call_evaluations(evals, context="global_fallback")
                 all_evaluations.extend(evals)
                 log.info(f"    → {len(evals)} évaluations Claude (fallback)")
         else:
@@ -824,6 +805,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
     # ── Étape 6 : Top problématiques + consolidation ──────────────────────────
     all_evaluations = sanitize_call_evaluations(all_evaluations, context="pre_consolidation")
     top_problematic = get_top_problematic(all_evaluations)
+    voc_summary = metrics_builder.build_voc_summary(all_evaluations)
     consolidation_summary = build_consolidation_summary(metrics, all_evaluations, top_problematic)
     log.info(f"  Top {len(top_problematic)} appels problématiques identifiés")
     fallback = build_fallback_consolidation(metrics, consolidation_summary)
@@ -876,6 +858,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         "kb_gaps": consolidated.get("kb_gaps", {"missing": [], "incomplete": [], "to_revise": []}),
         "recommendations": consolidated.get("recommendations", []),
         "weekly_trend": consolidated.get("weekly_trend"),
+        "voc_summary": voc_summary,
         "llm_usage": llm_usage,
     }
 
@@ -923,92 +906,294 @@ def save_analysis_to_d1(call_evaluations: list[dict]):
             log.warning(f"Impossible de sauvegarder l'analyse call {call_id} en D1 : {e}")
 
 
+def _build_run_record(mode: str, target_date: datetime) -> dict:
+    return {
+        "id": persistence.build_llm_run_id(mode, target_date),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "ended_at": None,
+        "mode": mode,
+        "model": config.OLLAMA_MODEL_ANALYSIS,
+        "calls_count": 0,
+        "errors_count": 0,
+        "tokens_total": 0,
+        "status": "started",
+    }
+
+
+def _finalize_run_record(run_record: dict, status: str, analyzed_calls_count: int, analysis: dict | None = None, errors_count: int = 0) -> None:
+    llm_usage = (analysis or {}).get("llm_usage", {}) if analysis else {}
+    run_record.update(
+        {
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "calls_count": analyzed_calls_count,
+            "errors_count": errors_count,
+            "tokens_total": int(llm_usage.get("anthropic_input_tokens", 0) or 0) + int(llm_usage.get("anthropic_output_tokens", 0) or 0),
+            "status": status,
+        }
+    )
+    persistence.save_llm_run(run_record)
+
+
+def _avg_soft_score(call_evaluations: list[dict]) -> float | None:
+    notes = []
+    for ev in call_evaluations or []:
+        try:
+            note = float((ev.get("soft_skills") or {}).get("note_globale"))
+        except (TypeError, ValueError):
+            continue
+        notes.append(note)
+    if not notes:
+        return None
+    return round(sum(notes) / len(notes), 1)
+
+
+def _repeat_caller_rate(calls: list[dict]) -> float:
+    return metrics_builder.repeat_caller_rate(calls)
+
+
+def _future_calls_for_repeat_cohort(target_date: datetime) -> list[dict]:
+    now_local = datetime.now()
+    if (now_local.date() - target_date.date()).days < 7:
+        return []
+    future_start = target_date + timedelta(days=1)
+    future_end = target_date + timedelta(days=7)
+    try:
+        future_calls = []
+        current = future_start
+        while current <= future_end:
+            future_calls.extend(call_classifier.classify_all(call_fetcher.fetch_calls_for_date(current)))
+            current += timedelta(days=1)
+        return future_calls
+    except Exception as exc:  # noqa: BLE001
+        log.warning("  [snapshot] cohorte J+7 indisponible: %s", exc)
+        return []
+
+
+def _persist_daily_snapshot(target_date: datetime, metrics: dict, analysis: dict, total_calls: list[dict]) -> None:
+    future_calls = _future_calls_for_repeat_cohort(target_date)
+    evaluations = analysis.get("call_evaluations", [])
+    enriched_metrics = dict(metrics)
+    enriched_metrics["repeat_caller_rate_pct"] = metrics_builder.repeat_caller_rate(total_calls, future_calls=future_calls)
+    enriched_metrics["avg_soft_score"] = _avg_soft_score(evaluations)
+    enriched_metrics["kb_compliance_rate_pct"] = metrics_builder.kb_compliance_rate(evaluations)
+    enriched_metrics["warm_transfer_success_rate_pct"] = metrics_builder.warm_transfer_success_rate(total_calls)
+    enriched_metrics["coverage_pct"] = (analysis.get("analysis_meta") or {}).get("actual_coverage_pct")
+    history = [
+        row for row in persistence.fetch_daily_snapshots("global", days=14, agent_id="")
+        if str(row.get("date")) < target_date.strftime("%Y-%m-%d")
+    ]
+    anomalies = metrics_builder.detect_snapshot_anomalies(
+        target_date,
+        "global",
+        "",
+        {
+            "pickup_rate": enriched_metrics.get("pickup_rate_pct"),
+            "abandon_rate": enriched_metrics.get("abandon_rate_pct"),
+            "avg_soft_score": enriched_metrics.get("avg_soft_score"),
+        },
+        history,
+        total_calls,
+        evaluations,
+    )
+    persistence.save_daily_snapshot(target_date, "global", enriched_metrics)
+
+    agent_snapshots = metrics_builder.build_agent_daily_snapshots(total_calls, evaluations, future_calls=future_calls or None)
+    for snapshot in agent_snapshots:
+        agent_history = [
+            row for row in persistence.fetch_daily_snapshots("agent", days=14, agent_id=snapshot["agent_id"])
+            if str(row.get("date")) < target_date.strftime("%Y-%m-%d")
+        ]
+        anomalies.extend(
+            metrics_builder.detect_snapshot_anomalies(
+                target_date,
+                "agent",
+                snapshot["agent_id"],
+                {
+                    "pickup_rate": snapshot.get("pickup_rate_pct"),
+                    "abandon_rate": snapshot.get("abandon_rate_pct"),
+                    "avg_soft_score": snapshot.get("avg_soft_score"),
+                },
+                agent_history,
+                [call for call in total_calls if persistence.canonical_agent_id(call) == snapshot["agent_id"]],
+                evaluations,
+            )
+        )
+        persistence.save_daily_snapshot(target_date, "agent", snapshot)
+
+    kb_gap_clusters = metrics_builder.cluster_kb_gaps(evaluations)
+    persistence.save_kb_gaps(kb_gap_clusters, target_date)
+    for event in anomalies:
+        persistence.save_anomaly_event(event)
+
+    analysis["agent_snapshots"] = agent_snapshots
+    analysis["anomalies"] = anomalies
+    analysis["kb_gap_clusters"] = kb_gap_clusters
+
+
+def _run_shadow_evaluations(target_date: datetime, calls_to_analyze: list[dict], analysis: dict, kb_summary: str) -> list[dict]:
+    if not config.ENABLE_CLAUDE_SHADOW or not config.ANTHROPIC_API_KEY:
+        return []
+    call_index = {
+        str(call.get("call_id_internal") or call.get("call_id") or "").strip(): call
+        for call in calls_to_analyze or []
+    }
+    evaluation_ids = [str(ev.get("call_id") or "").strip() for ev in (analysis.get("call_evaluations") or []) if ev.get("call_id")]
+    if not evaluation_ids:
+        return []
+    sample_size = max(1, round(len(evaluation_ids) * config.CLAUDE_SHADOW_SAMPLE_PCT))
+    seeded_random = random.Random(target_date.strftime("%Y-%m-%d"))
+    selected_ids = seeded_random.sample(evaluation_ids, min(sample_size, len(evaluation_ids)))
+    rows = []
+    for call_id in selected_ids:
+        call = call_index.get(call_id)
+        if not call or not call.get("transcript"):
+            continue
+        try:
+            shadow_evaluations = llm_client.analyze_batch([call], kb_summary, model=llm_client.get_model_standard())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("  [shadow] échec call_id=%s: %s", call_id, exc)
+            continue
+        if not shadow_evaluations:
+            continue
+        shadow = shadow_evaluations[0]
+        primary = next((ev for ev in (analysis.get("call_evaluations") or []) if str(ev.get("call_id")) == call_id), None)
+        if not primary:
+            continue
+        try:
+            primary_score = float(primary.get("score_global"))
+            shadow_score = float(shadow.get("score_global"))
+        except (TypeError, ValueError):
+            primary_score = primary.get("score_global")
+            shadow_score = shadow.get("score_global")
+        rows.append(
+            {
+                "id": f"shadow:{target_date.strftime('%Y-%m-%d')}:{call_id}",
+                "call_id": call_id,
+                "evaluation_id": f"eval:{call_id}",
+                "primary_model": primary.get("_model") or config.OLLAMA_MODEL_ANALYSIS,
+                "shadow_model": shadow.get("_model") or llm_client.get_model_standard(),
+                "primary_score": primary_score,
+                "shadow_score": shadow_score,
+                "delta_score": round(float(shadow_score) - float(primary_score), 1) if isinstance(primary_score, (int, float)) and isinstance(shadow_score, (int, float)) else None,
+                "raw": {"primary": primary, "shadow": shadow},
+            }
+        )
+    return rows
+
+
 # ── Modes d'exécution ─────────────────────────────────────────────────────────
 
 def run_daily(target_date: datetime):
     log.info(f"=== ANALYSE QUOTIDIENNE — {target_date.strftime('%d/%m/%Y')} ===")
+    run_record = _build_run_record("daily", target_date)
+    persistence.save_llm_run(run_record)
+    calls = []
+    ucc_calls = []
+    qa_calls = []
+    calls_to_analyze = []
+    analysis = None
+    try:
+        # Récupération + classification de TOUS les appels du jour
+        calls = call_fetcher.fetch_calls_for_date(target_date)
+        calls = call_classifier.classify_all(calls)
+        calls = call_fetcher.enrich_with_agent_identity(calls)
+        log.info(f"  {len(calls)} appels récupérés")
+        persistence.persist_calls(calls)
 
-    # Récupération + classification de TOUS les appels du jour
-    calls = call_fetcher.fetch_calls_for_date(target_date)
-    log.info(f"  {len(calls)} appels récupérés")
-    calls = call_classifier.classify_all(calls)
+        # Métriques globales sur TOUS les appels (avant filtre UCC)
+        metrics = metrics_builder.compute_metrics(calls)
+        log.info(f"  KPIs globaux : décroché={metrics.get('pickup_rate_pct')}% overflow={metrics.get('overflow_rate_pct')}%")
 
-    # Métriques globales sur TOUS les appels (avant filtre UCC)
-    metrics = metrics_builder.compute_metrics(calls)
-    log.info(f"  KPIs globaux : décroché={metrics.get('pickup_rate_pct')}% overflow={metrics.get('overflow_rate_pct')}%")
+        # Alertes immédiates (pic, repeat callers)
+        for alert in metrics.get("alerts", []):
+            if alert.get("level") == "critical":
+                notifier.send_alert(alert["message"], level="critical")
 
-    # Alertes immédiates (pic, repeat callers)
-    for alert in metrics.get("alerts", []):
-        if alert.get("level") == "critical":
-            notifier.send_alert(alert["message"], level="critical")
+        # Scope QA global : UCC + Driveco Care
+        ucc_calls = call_classifier.filter_ucc_calls(calls)
+        driveco_calls = call_classifier.filter_driveco_calls(calls)
+        qa_calls = call_classifier.filter_qa_calls(calls)
+        log.info(
+            f"  Appels QA scope : {len(qa_calls)}/{len(calls)} "
+            f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
+        )
 
-    # Scope QA global : UCC + Driveco Care
-    ucc_calls = call_classifier.filter_ucc_calls(calls)
-    driveco_calls = call_classifier.filter_driveco_calls(calls)
-    qa_calls = call_classifier.filter_qa_calls(calls)
-    log.info(
-        f"  Appels QA scope : {len(qa_calls)}/{len(calls)} "
-        f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
-    )
+        if not qa_calls:
+            log.warning("  Aucun appel QA pour ce jour — rapport minimal généré")
+            analysis = {"kpis": metrics, "scores": {}, "call_evaluations": [], "top_problematic_calls": [],
+                        "top_issues": [], "good_practices": [], "alerts": metrics.get("alerts", []),
+                        "kb_gaps": {"missing": [], "incomplete": [], "to_revise": []}, "recommendations": []}
+            _persist_daily_snapshot(target_date, metrics, analysis, calls)
+            report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
+            notifier.save_report(report_md, target_date, mode="daily")
+            notifier.send_slack_notification(analysis, mode="daily", date=target_date,
+                                             calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
+            _finalize_run_record(run_record, "success", 0, analysis, errors_count=0)
+            log.info("  ✅ Analyse quotidienne terminée.")
+            return
 
-    if not qa_calls:
-        log.warning("  Aucun appel QA pour ce jour — rapport minimal généré")
-        analysis = {"kpis": metrics, "scores": {}, "call_evaluations": [], "top_problematic_calls": [],
-                    "top_issues": [], "good_practices": [], "alerts": metrics.get("alerts", []),
-                    "kb_gaps": {"missing": [], "incomplete": [], "to_revise": []}, "recommendations": []}
+        # Sélection 75% des appels QA analysables (stratifiée)
+        calls_to_analyze = select_calls_for_analysis(
+            qa_calls,
+            config.ANALYSIS_COVERAGE_PCT,
+        )
+        eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+        eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+        eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+
+        # Enrichissement transcripts pour les appels prioritaires
+        calls_to_analyze = call_fetcher.enrich_with_transcripts(
+            calls_to_analyze, max_with_transcript=len(calls_to_analyze)
+        )
+        persistence.persist_transcripts(calls_to_analyze)
+
+        kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
+
+        # Analyse avec routing Ollama prioritaire, consolidation Anthropic optionnelle
+        analysis = run_batched_llm_analysis(
+            target_date, metrics, calls_to_analyze, kb_summary,
+            consolidation_model=llm_client.get_model_standard(),  # Haiku
+            mode="daily",
+        )
+
+        transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
+        analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
+        analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
+        analysis["analysis_meta"] = {
+            "eligible_calls": eligible_qa_count,
+            "eligible_ucc_calls": eligible_ucc_count,
+            "eligible_driveco_calls": eligible_driveco_count,
+            "analyzed_calls": len(calls_to_analyze),
+            "analyzed_ucc_calls": analyzed_ucc_count,
+            "analyzed_driveco_calls": analyzed_driveco_count,
+            "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
+            "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
+            "transcript_calls": transcripts_count,
+            "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
+            "llm_usage": analysis.get("llm_usage", {}),
+        }
+
+        save_analysis_to_d1(analysis.get("call_evaluations", []))
+        persistence.persist_evaluations(calls_to_analyze, analysis.get("call_evaluations", []))
+        shadow_rows = _run_shadow_evaluations(target_date, calls_to_analyze, analysis, kb_summary)
+        if shadow_rows:
+            persistence.save_shadow_runs(shadow_rows)
+            analysis["shadow_runs"] = shadow_rows
+        persistence.purge_expired_verbatims()
+        _persist_daily_snapshot(target_date, metrics, analysis, calls)
+
         report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
         notifier.save_report(report_md, target_date, mode="daily")
         notifier.send_slack_notification(analysis, mode="daily", date=target_date,
                                          calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
-        return
-
-    # Sélection 75% des appels QA analysables (stratifiée)
-    calls_to_analyze = select_calls_for_analysis(
-        qa_calls,
-        config.ANALYSIS_COVERAGE_PCT,
-    )
-    eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-    eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-    eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-
-    # Enrichissement transcripts pour les appels prioritaires
-    calls_to_analyze = call_fetcher.enrich_with_transcripts(
-        calls_to_analyze, max_with_transcript=len(calls_to_analyze)
-    )
-
-    kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
-
-    # Analyse avec routing Ollama → Haiku, consolidation Haiku
-    analysis = run_batched_llm_analysis(
-        target_date, metrics, calls_to_analyze, kb_summary,
-        consolidation_model=llm_client.get_model_standard(),  # Haiku
-        mode="daily",
-    )
-
-    transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
-    analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
-    analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
-    analysis["analysis_meta"] = {
-        "eligible_calls": eligible_qa_count,
-        "eligible_ucc_calls": eligible_ucc_count,
-        "eligible_driveco_calls": eligible_driveco_count,
-        "analyzed_calls": len(calls_to_analyze),
-        "analyzed_ucc_calls": analyzed_ucc_count,
-        "analyzed_driveco_calls": analyzed_driveco_count,
-        "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
-        "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
-        "transcript_calls": transcripts_count,
-        "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
-        "llm_usage": analysis.get("llm_usage", {}),
-    }
-
-    save_analysis_to_d1(analysis.get("call_evaluations", []))
-
-    report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
-    notifier.save_report(report_md, target_date, mode="daily")
-    notifier.send_slack_notification(analysis, mode="daily", date=target_date,
-                                     calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
-    log.info("  ✅ Analyse quotidienne terminée.")
+        notifier.send_anomaly_alerts(analysis, target_date)
+        notifier.send_voc_alerts(analysis, mode="daily", date=target_date)
+        log.info("  ✅ Analyse quotidienne terminée.")
+    except Exception:
+        _finalize_run_record(run_record, "failed", len(calls_to_analyze), analysis, errors_count=1)
+        raise
+    else:
+        _finalize_run_record(run_record, "success", len(calls_to_analyze), analysis, errors_count=0)
 
 
 def run_weekly(end_date: datetime):
@@ -1020,80 +1205,146 @@ def run_weekly(end_date: datetime):
     start_date = end_date - timedelta(days=6)  # Toujours lundi
     log.info(f"=== ANALYSE HEBDOMADAIRE — {start_date.strftime('%d/%m')} → {end_date.strftime('%d/%m/%Y')} (Lun→Dim) ===")
 
-    # Agrégation des 7 jours
+    run_record = _build_run_record("weekly", end_date)
+    persistence.save_llm_run(run_record)
     all_calls = []
-    for i in range(7):
-        day = start_date + timedelta(days=i)
-        day_calls = call_fetcher.fetch_calls_for_date(day)
-        for c in day_calls:
-            c["day"] = day.strftime("%Y-%m-%d")
-        all_calls.extend(day_calls)
+    qa_calls = []
+    calls_to_analyze = []
+    analysis = None
+    try:
+        # Agrégation des 7 jours
+        for i in range(7):
+            day = start_date + timedelta(days=i)
+            day_calls = call_fetcher.fetch_calls_for_date(day)
+            for c in day_calls:
+                c["day"] = day.strftime("%Y-%m-%d")
+            all_calls.extend(day_calls)
 
-    log.info(f"  {len(all_calls)} appels agrégés sur 7 jours")
-    all_calls = call_classifier.classify_all(all_calls)
-    metrics = metrics_builder.compute_metrics(all_calls)
+        log.info(f"  {len(all_calls)} appels agrégés sur 7 jours")
+        all_calls = call_classifier.classify_all(all_calls)
+        all_calls = call_fetcher.enrich_with_agent_identity(all_calls)
+        persistence.persist_calls(all_calls)
+        metrics = metrics_builder.compute_metrics(all_calls)
 
-    # Métriques par jour pour le rapport hebdo
-    daily_metrics = {}
-    for i in range(7):
-        day = start_date + timedelta(days=i)
-        day_str = day.strftime("%Y-%m-%d")
-        day_calls = [c for c in all_calls if c.get("day") == day_str]
-        daily_metrics[day_str] = metrics_builder.compute_metrics(day_calls) if day_calls else {}
-    metrics["daily_breakdown"] = daily_metrics
+        # Métriques par jour pour le rapport hebdo
+        daily_metrics = {}
+        for i in range(7):
+            day = start_date + timedelta(days=i)
+            day_str = day.strftime("%Y-%m-%d")
+            day_calls = [c for c in all_calls if c.get("day") == day_str]
+            daily_metrics[day_str] = metrics_builder.compute_metrics(day_calls) if day_calls else {}
+        metrics["daily_breakdown"] = daily_metrics
 
-    # Scope QA global pour l'analyse QA
-    ucc_calls = call_classifier.filter_ucc_calls(all_calls)
-    driveco_calls = call_classifier.filter_driveco_calls(all_calls)
-    qa_calls = call_classifier.filter_qa_calls(all_calls)
-    log.info(
-        f"  Appels QA scope : {len(qa_calls)}/{len(all_calls)} "
-        f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
-    )
+        # Scope QA global pour l'analyse QA
+        ucc_calls = call_classifier.filter_ucc_calls(all_calls)
+        driveco_calls = call_classifier.filter_driveco_calls(all_calls)
+        qa_calls = call_classifier.filter_qa_calls(all_calls)
+        log.info(
+            f"  Appels QA scope : {len(qa_calls)}/{len(all_calls)} "
+            f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
+        )
 
-    # 75% de couverture pour l'hebdo, sans plafond dur
-    calls_to_analyze = select_calls_for_analysis(
-        qa_calls,
-        coverage_pct=config.ANALYSIS_COVERAGE_PCT,
-    )
-    eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-    eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-    eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-    calls_to_analyze = call_fetcher.enrich_with_transcripts(
-        calls_to_analyze, max_with_transcript=len(calls_to_analyze)
-    )
+        # 75% de couverture pour l'hebdo, sans plafond dur
+        calls_to_analyze = select_calls_for_analysis(
+            qa_calls,
+            coverage_pct=config.ANALYSIS_COVERAGE_PCT,
+        )
+        eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+        eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+        eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+        calls_to_analyze = call_fetcher.enrich_with_transcripts(
+            calls_to_analyze, max_with_transcript=len(calls_to_analyze)
+        )
+        persistence.persist_transcripts(calls_to_analyze)
 
-    kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
+        kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
 
-    # Analyse avec routing Ollama → Haiku, consolidation Sonnet (meilleure qualité pour hebdo)
-    analysis = run_batched_llm_analysis(
-        end_date, metrics, calls_to_analyze, kb_summary,
-        consolidation_model=llm_client.get_model_reporting(),  # Sonnet
-        mode="weekly",
-    )
+        # Analyse avec routing Ollama prioritaire, consolidation Sonnet optionnelle pour hebdo
+        analysis = run_batched_llm_analysis(
+            end_date, metrics, calls_to_analyze, kb_summary,
+            consolidation_model=llm_client.get_model_reporting(),  # Sonnet
+            mode="weekly",
+        )
 
-    transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
-    analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
-    analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
-    analysis["analysis_meta"] = {
-        "eligible_calls": eligible_qa_count,
-        "eligible_ucc_calls": eligible_ucc_count,
-        "eligible_driveco_calls": eligible_driveco_count,
-        "analyzed_calls": len(calls_to_analyze),
-        "analyzed_ucc_calls": analyzed_ucc_count,
-        "analyzed_driveco_calls": analyzed_driveco_count,
-        "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
-        "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
-        "transcript_calls": transcripts_count,
-        "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
-        "llm_usage": analysis.get("llm_usage", {}),
-    }
+        transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
+        analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
+        analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
+        analysis["analysis_meta"] = {
+            "eligible_calls": eligible_qa_count,
+            "eligible_ucc_calls": eligible_ucc_count,
+            "eligible_driveco_calls": eligible_driveco_count,
+            "analyzed_calls": len(calls_to_analyze),
+            "analyzed_ucc_calls": analyzed_ucc_count,
+            "analyzed_driveco_calls": analyzed_driveco_count,
+            "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
+            "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
+            "transcript_calls": transcripts_count,
+            "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
+            "llm_usage": analysis.get("llm_usage", {}),
+        }
 
-    report_md = report_formatter.format_weekly_report(start_date, end_date, metrics, analysis)
-    notifier.save_report(report_md, end_date, mode="weekly")
-    notifier.send_slack_notification(analysis, mode="weekly", date=end_date,
-                                     calls=all_calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
-    log.info("  ✅ Analyse hebdomadaire terminée.")
+        persistence.persist_evaluations(calls_to_analyze, analysis.get("call_evaluations", []))
+        shadow_rows = _run_shadow_evaluations(end_date, calls_to_analyze, analysis, kb_summary)
+        if shadow_rows:
+            persistence.save_shadow_runs(shadow_rows)
+            analysis["shadow_runs"] = shadow_rows
+        persistence.purge_expired_verbatims()
+
+        report_md = report_formatter.format_weekly_report(start_date, end_date, metrics, analysis)
+        notifier.save_report(report_md, end_date, mode="weekly")
+        notifier.send_slack_notification(analysis, mode="weekly", date=end_date,
+                                         calls=all_calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
+        notifier.send_voc_alerts(analysis, mode="weekly", date=end_date)
+        log.info("  ✅ Analyse hebdomadaire terminée.")
+    except Exception:
+        _finalize_run_record(run_record, "failed", len(calls_to_analyze), analysis, errors_count=1)
+        raise
+    else:
+        _finalize_run_record(run_record, "success", len(calls_to_analyze), analysis, errors_count=0)
+
+
+def run_reliability(target_date: datetime):
+    log.info(f"=== RELIABILITY HEBDO — {target_date.strftime('%d/%m/%Y')} ===")
+    run_record = _build_run_record("reliability", target_date)
+    persistence.save_llm_run(run_record)
+    try:
+        cached_payload = notion_kb_fetcher._load_cache()  # type: ignore[attr-defined]
+        if cached_payload:
+            kb_summary = cached_payload.get("summary_full") or cached_payload.get("summary_titles") or ""
+        else:
+            kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
+        scored_rows = reliability.score_gold_set(mode="ollama", kb_summary=kb_summary)
+        metrics = reliability.compute_reliability_metrics(scored_rows)
+        run_record["raw"] = {
+            "reliability_metrics": metrics.as_dict(),
+            "scored_entries": [
+                {
+                    "call_id": row["entry"].get("call_id"),
+                    "human_score": row["entry"].get("human_score"),
+                    "predicted_score": (row.get("evaluation") or {}).get("score_global"),
+                }
+                for row in scored_rows
+            ],
+        }
+        analysis = {"llm_usage": {}, "reliability_metrics": metrics.as_dict()}
+        if metrics.mae is not None and metrics.mae > config.RELIABILITY_MAE_ALERT_THRESHOLD:
+            notifier.send_alert(
+                (
+                    f"Reliability QA en dérive: MAE={metrics.mae} "
+                    f"(seuil {config.RELIABILITY_MAE_ALERT_THRESHOLD}) sur {metrics.entries_used} appels gold set."
+                ),
+                level="critical",
+            )
+        elif metrics.mae is not None:
+            notifier.send_alert(
+                f"Reliability QA OK: MAE={metrics.mae}, Pearson={metrics.pearson}, échantillon={metrics.entries_used}.",
+                level="warning",
+            )
+    except Exception:
+        _finalize_run_record(run_record, "failed", 0, None, errors_count=1)
+        raise
+    else:
+        _finalize_run_record(run_record, "success", metrics.entries_used, analysis, errors_count=0)
 
 
 def run_test():
@@ -1120,14 +1371,22 @@ def run_test():
             risk, reason = ollama_client.pre_screen_call(dummy_call)
             print(f"✅ Ollama local — disponible, pre-screening OK (test: risk={risk:.1f} '{reason}')")
         else:
-            print("⚠️  Ollama local — non disponible (le pipeline fonctionnera en mode Haiku-only)")
+            print("⚠️  Ollama local — non disponible (le pipeline fonctionnera en mode dégradé)")
     except Exception as e:
         print(f"❌ Ollama — {e}")
 
     # Notion KB
     try:
-        articles = notion_kb_fetcher.fetch_kb_index(force_refresh=True)
-        print(f"✅ Notion KB — {len(articles)} articles indexés")
+        import requests as _req
+        resp = _req.get(
+            f"https://api.notion.com/v1/blocks/{config.NOTION_KB_PAGE_ID}/children?page_size=1",
+            headers={"Authorization": f"Bearer {config.NOTION_API_KEY}", "Notion-Version": "2022-06-28"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            print(f"✅ Notion KB — page accessible (ID: {config.NOTION_KB_PAGE_ID})")
+        else:
+            print(f"❌ Notion KB — {resp.status_code}")
     except Exception as e:
         print(f"❌ Notion KB — {e}")
 
@@ -1145,6 +1404,27 @@ def run_test():
             print(f"❌ Notion Reports page — {resp.status_code}")
     except Exception as e:
         print(f"❌ Notion Reports — {e}")
+
+    # Supabase
+    try:
+        import requests as _req
+        if config.SUPABASE_URL and config.SUPABASE_SERVICE_KEY:
+            resp = _req.get(
+                f"{config.SUPABASE_URL.rstrip('/')}/rest/v1/",
+                headers={
+                    "apikey": config.SUPABASE_SERVICE_KEY,
+                    "Authorization": f"Bearer {config.SUPABASE_SERVICE_KEY}",
+                },
+                timeout=10,
+            )
+            if resp.status_code in (200, 404):
+                print("✅ Supabase — endpoint REST accessible")
+            else:
+                print(f"❌ Supabase — {resp.status_code}")
+        else:
+            print("⚠️  Supabase — non configuré")
+    except Exception as e:
+        print(f"❌ Supabase — {e}")
 
     # LLM
     try:
@@ -1187,7 +1467,7 @@ def run_test():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline QA Driveco")
-    parser.add_argument("--mode", choices=["daily", "weekly", "test"], default="test")
+    parser.add_argument("--mode", choices=["daily", "weekly", "reliability", "test"], default="test")
     parser.add_argument("--date", default=None,
                         help="Date cible YYYY-MM-DD (défaut : hier pour daily, lundi dernier pour weekly)")
     args = parser.parse_args()
@@ -1210,3 +1490,5 @@ if __name__ == "__main__":
             run_daily(target)
         elif args.mode == "weekly":
             run_weekly(target)
+        elif args.mode == "reliability":
+            run_reliability(target)

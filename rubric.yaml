@@ -1,0 +1,83 @@
+version: qa_rubric_v1
+description: Rubric QA Driveco unique pour scoring pondéré côté Python.
+criteria:
+  - key: accueil
+    label: Accueil
+    weight: 0.08
+    anchors:
+      "0": Pas de formule d'accueil ou ton froid.
+      "3": Accueil minimal, mécanique ou incomplet.
+      "6": Accueil correct et professionnel.
+      "9": Accueil chaleureux, clair et rassurant.
+  - key: ecoute_active
+    label: Ecoute active
+    weight: 0.14
+    anchors:
+      "0": Coupe le client ou ignore les éléments clés.
+      "3": Ecoute partielle, peu de reformulation.
+      "6": Ecoute correcte avec questions utiles.
+      "9": Reformulation nette et compréhension manifeste.
+  - key: empathie
+    label: Empathie
+    weight: 0.14
+    anchors:
+      "0": Ignore la gêne ou la frustration du client.
+      "3": Empathie faible ou très mécanique.
+      "6": Empathie visible et adaptée.
+      "9": Empathie forte, sincère et apaisante.
+  - key: gestion_tension
+    label: Gestion de tension
+    weight: 0.08
+    anchors:
+      "0": Répond sur la défensive ou aggrave la tension.
+      "3": Reste neutre mais ne désamorce pas.
+      "6": Gère correctement une tension modérée.
+      "9": Désamorce clairement et recentre sur la solution.
+  - key: professionnalisme
+    label: Professionnalisme
+    weight: 0.10
+    anchors:
+      "0": Discours désorganisé ou peu crédible.
+      "3": Hésitations marquées ou manque d'assurance.
+      "6": Attitude professionnelle globalement solide.
+      "9": Très bonne maîtrise, ton sûr et structuré.
+  - key: clarte_communication
+    label: Clarté de communication
+    weight: 0.10
+    anchors:
+      "0": Explications confuses ou difficiles à suivre.
+      "3": Message partiellement clair.
+      "6": Explications compréhensibles.
+      "9": Explications limpides, simples et ordonnées.
+  - key: orientation_solution
+    label: Orientation solution
+    weight: 0.12
+    anchors:
+      "0": Ne propose pas de solution exploitable.
+      "3": Solution vague ou tardive.
+      "6": Solution correcte avec prochaine étape.
+      "9": Solution proactive avec alternatives concrètes.
+  - key: cloture
+    label: Clôture
+    weight: 0.08
+    anchors:
+      "0": Fin abrupte, sans vérification.
+      "3": Clôture minimale.
+      "6": Clôture correcte avec next step.
+      "9": Clôture complète, rassurante et vérifiée.
+  - key: qualification_investigation
+    label: Qualification et investigation
+    weight: 0.08
+    anchors:
+      "0": Ne qualifie pas ou agit trop vite.
+      "3": Qualification incomplète.
+      "6": Questions utiles avant action.
+      "9": Investigation précise et structurée.
+  - key: kb_application
+    label: Application procédure KB
+    weight: 0.08
+    anchors:
+      "0": Procédure non suivie ou erronée.
+      "3": Application partielle ou hésitante.
+      "6": Procédure globalement respectée.
+      "9": Procédure suivie avec rigueur et bon discernement.

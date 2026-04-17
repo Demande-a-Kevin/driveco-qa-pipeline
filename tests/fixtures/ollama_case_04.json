@@ -1,0 +1,54 @@
+{
+  "call": {
+    "call_id_internal": "3644887559",
+    "classified_type": "ucc_handled",
+    "duration_in_call": 937,
+    "transcript": "[Client] Ça fait plusieurs fois que j'essaie de me brancher. [Agent] D'accord, alors attendez madame, je vais regarder. [Agent] J'essaye de redémarrer la borne."
+  },
+  "factual_extract": {
+    "call_id": "3644887559",
+    "classified_type": "ucc_handled",
+    "customer_call_reason": "Redémarrage borne",
+    "transcript_usable": true,
+    "kb_compliance": {
+      "status": "partiel",
+      "article": "START - Unable to start Interop",
+      "rationale": "Une action utile est tentée."
+    },
+    "positives": [
+      {
+        "text": "Action rapide",
+        "citation": "j'essaye de redémarrer la borne"
+      }
+    ],
+    "improvement_points": [
+      {
+        "text": "Point rejeté car citation absente",
+        "citation": "citation qui n'existe pas dans le transcript"
+      }
+    ],
+    "alerts": [],
+    "procedural_steps_followed": [
+      "Redémarrage borne"
+    ],
+    "emotional_signals": []
+  },
+  "scorecard": {
+    "accueil": 5,
+    "ecoute_active": 5,
+    "empathie": 5,
+    "gestion_tension": null,
+    "professionnalisme": 6,
+    "clarte_communication": 6,
+    "orientation_solution": 7,
+    "cloture": 5,
+    "qualification_investigation": 4,
+    "kb_application": 5,
+    "observations": "La réponse est utile mais l'analyse reste un peu courte."
+  },
+  "expected": {
+    "score_global": 5.2,
+    "errors_count": 0,
+    "warnings_count": 1
+  }
+}

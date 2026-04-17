@@ -114,6 +114,22 @@ NOTION_REPORTS_PAGE_ID = os.getenv("NOTION_REPORTS_PAGE_ID", "")
 # ── Slack ────────────────────────────────────────────────────────────────────
 SLACK_BOT_TOKEN     = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID    = os.getenv("SLACK_CHANNEL_ID", "")
+SLACK_VOC_ALERTS_CHANNEL_ID = os.getenv("SLACK_VOC_ALERTS_CHANNEL_ID", SLACK_CHANNEL_ID)
+
+# ── Supabase ────────────────────────────────────────────────────────────────
+SUPABASE_URL        = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_DASHBOARD_ANON_KEY = os.getenv("SUPABASE_DASHBOARD_ANON_KEY", "")
+SUPABASE_TIMEOUT_SECONDS = int(os.getenv("SUPABASE_TIMEOUT_SECONDS", "20"))
+
+# ── VoC ──────────────────────────────────────────────────────────────────────
+ENABLE_VOC_ANALYSIS = os.getenv("ENABLE_VOC_ANALYSIS", "true").strip().lower() in {"1", "true", "yes", "on"}
+VOC_VERBATIM_RETENTION_DAYS = int(os.getenv("VOC_VERBATIM_RETENTION_DAYS", "180"))
+VOC_MIN_WEAK_SIGNAL_COUNT = int(os.getenv("VOC_MIN_WEAK_SIGNAL_COUNT", "3"))
+ENABLE_CLAUDE_SHADOW = os.getenv("ENABLE_CLAUDE_SHADOW", "false").strip().lower() in {"1", "true", "yes", "on"}
+CLAUDE_SHADOW_SAMPLE_PCT = float(os.getenv("CLAUDE_SHADOW_SAMPLE_PCT", "0.10"))
+RELIABILITY_MAE_ALERT_THRESHOLD = float(os.getenv("RELIABILITY_MAE_ALERT_THRESHOLD", "1.0"))
+HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8788"))
 
 # ── Lignes Aircall ───────────────────────────────────────────────────────────
 # Lignes analysées pour le QA UCC (assistance + transferts chauds vers Care)

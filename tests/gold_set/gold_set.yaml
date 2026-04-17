@@ -1,0 +1,205 @@
+entries:
+  - call_id: gold-001
+    status: ready
+    classified_type: ucc_handled
+    duration_seconds: 214
+    transcript: |
+      [Client] Bonjour, l'application bloque au moment du paiement.
+      [Agent] Je vérifie votre compte.
+      [Client] J'ai déjà essayé deux fois.
+      [Agent] Je relance la procédure et je vous envoie le pas à pas.
+      [Client] Merci.
+    human_score: 7.0
+    soft_skills:
+      accueil: 7
+      ecoute_active: 7
+      empathie: 7
+      gestion_tension: 7
+      professionnalisme: 8
+      clarte_communication: 7
+      orientation_solution: 8
+      cloture: 7
+    issues:
+      - Reformuler la prochaine action plus tôt
+    voc_topics:
+      - topic_code: app_paiement
+        sentiment: négatif
+    voc_entities:
+      - entity_code: app_mobile
+        sentiment: négatif
+    key_verbatims:
+      - l'application bloque au moment du paiement
+
+  - call_id: gold-002
+    status: ready
+    classified_type: ucc_handled
+    duration_seconds: 305
+    transcript: |
+      [Client] La borne de mon parking est hors service depuis ce matin.
+      [Agent] Je consulte l'état de la borne.
+      [Client] On n'a aucune info sur place.
+      [Agent] Je vais ouvrir un ticket maintenance.
+      [Client] D'accord.
+    human_score: 6.0
+    soft_skills:
+      accueil: 6
+      ecoute_active: 7
+      empathie: 6
+      gestion_tension: 6
+      professionnalisme: 7
+      clarte_communication: 6
+      orientation_solution: 6
+      cloture: 6
+    issues:
+      - Donner un délai plus précis
+    voc_topics:
+      - topic_code: borne_hs_terrain
+        sentiment: très_négatif
+      - topic_code: communication_panne
+        sentiment: négatif
+    voc_entities:
+      - entity_code: borne_materielle
+        sentiment: très_négatif
+      - entity_code: driveco_marque
+        sentiment: négatif
+    key_verbatims:
+      - borne de mon parking est hors service
+      - aucune info sur place
+
+  - call_id: gold-003
+    status: ready
+    classified_type: ucc_handled
+    duration_seconds: 180
+    transcript: |
+      [Client] Merci, la charge a redémarré rapidement.
+      [Agent] Parfait.
+      [Client] Votre support a été clair.
+      [Agent] Bonne journée.
+    human_score: 9.0
+    soft_skills:
+      accueil: 9
+      ecoute_active: 9
+      empathie: 8
+      gestion_tension: 8
+      professionnalisme: 9
+      clarte_communication: 9
+      orientation_solution: 9
+      cloture: 9
+    issues: []
+    voc_topics:
+      - topic_code: feedback_positif
+        sentiment: très_positif
+    voc_entities:
+      - entity_code: support_client
+        sentiment: très_positif
+    key_verbatims:
+      - la charge a redémarré rapidement
+
+  - call_id: gold-004
+    status: ready
+    classified_type: ucc_handled
+    duration_seconds: 260
+    transcript: |
+      [Client] Si ça continue je vais aller chez Electra.
+      [Agent] Je comprends votre frustration.
+      [Client] Votre application plante une fois sur deux.
+      [Agent] Je crée un ticket technique.
+    human_score: 5.0
+    soft_skills:
+      accueil: 6
+      ecoute_active: 6
+      empathie: 6
+      gestion_tension: 5
+      professionnalisme: 6
+      clarte_communication: 5
+      orientation_solution: 5
+      cloture: 5
+    issues:
+      - Proposer un délai de retour
+    voc_topics:
+      - topic_code: app_bug
+        sentiment: très_négatif
+    voc_entities:
+      - entity_code: app_mobile
+        sentiment: très_négatif
+    key_verbatims:
+      - je vais aller chez Electra
+      - application plante une fois sur deux
+
+  - call_id: gold-005
+    status: ready
+    classified_type: b2b_direct
+    duration_seconds: 330
+    transcript: |
+      [Client] Je cherche la facture de mars et je ne la retrouve pas.
+      [Agent] Je vais vous l'envoyer par mail.
+      [Client] Merci, le site n'est pas clair.
+      [Agent] Je note le retour.
+    human_score: 7.5
+    soft_skills:
+      accueil: 8
+      ecoute_active: 8
+      empathie: 7
+      gestion_tension: 7
+      professionnalisme: 8
+      clarte_communication: 7
+      orientation_solution: 8
+      cloture: 7
+    issues:
+      - Mentionner où retrouver les factures
+    voc_topics:
+      - topic_code: facturation
+        sentiment: négatif
+    voc_entities:
+      - entity_code: processus_facturation
+        sentiment: négatif
+      - entity_code: site_web
+        sentiment: négatif
+    key_verbatims:
+      - le site n'est pas clair
+
+  - call_id: gold-006
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-007
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-008
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-009
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-010
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-011
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-012
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-013
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-014
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-015
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-016
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-017
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-018
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-019
+    status: pending_annotation
+    transcript: ""
+  - call_id: gold-020
+    status: pending_annotation
+    transcript: ""

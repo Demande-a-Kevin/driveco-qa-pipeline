@@ -132,6 +132,46 @@ def _normalize_kb_items(items, section: str) -> list[str]:
     return lines
 
 
+def _append_voc_section(lines: list[str], analysis: dict) -> None:
+    summary = analysis.get("voc_summary") or {}
+    top_topics = summary.get("top_topics") or []
+    verbatims = summary.get("verbatims") or []
+    weak_signals = summary.get("weak_signals") or []
+    competitors = summary.get("competitors") or []
+    opportunities = summary.get("opportunities") or []
+    if not (top_topics or verbatims or weak_signals or competitors or opportunities):
+        return
+
+    lines += ["## Voix du client", ""]
+    if top_topics:
+        lines.append("### Top topics")
+        for item in top_topics[:5]:
+            lines.append(f"- {item.get('label', item.get('topic_code'))} — {item.get('count', 0)} mention(s)")
+        lines.append("")
+    if weak_signals:
+        lines.append("### Signaux faibles")
+        for item in weak_signals[:5]:
+            lines.append(f"- {item.get('topic_code')} — {item.get('count', 0)} mention(s)")
+        lines.append("")
+    if verbatims:
+        lines.append("### Verbatims saillants")
+        for item in verbatims[:5]:
+            topic = item.get("topic_code") or "autre"
+            lines.append(f"- « {item.get('quote')} » *(appel {item.get('call_id', '?')} — {topic})*")
+        lines.append("")
+    if competitors:
+        lines.append("### Concurrents cités")
+        for item in competitors[:5]:
+            sample = item.get("sample_quote") or "contexte non disponible"
+            lines.append(f"- {item.get('competitor_name')} — {item.get('count', 0)} mention(s) — « {sample} »")
+        lines.append("")
+    if opportunities:
+        lines.append("### Opportunités produit")
+        for item in opportunities[:5]:
+            lines.append(f"- {item.get('description')} — {item.get('count', 0)} occurrence(s)")
+        lines.append("")
+
+
 def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
     kpis   = analysis.get("kpis", metrics)
     scores = analysis.get("scores", {})
@@ -314,6 +354,8 @@ def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
     if recs:
         lines += ["## Recommandations opérationnelles"]
         lines += [f"- {r}" for r in recs]
+
+    _append_voc_section(lines, analysis)
 
     lines += [
         "",
@@ -509,6 +551,8 @@ def format_weekly_report(start: datetime, end: datetime, metrics: dict, analysis
         lines += ["## Recommandations opérationnelles"]
         lines += [f"- {r}" for r in recs]
         lines.append("")
+
+    _append_voc_section(lines, analysis)
 
     lines += [
         "---",

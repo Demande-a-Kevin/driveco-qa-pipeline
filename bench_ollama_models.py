@@ -10,6 +10,7 @@ import call_classifier
 import call_fetcher
 import config
 import ollama_client
+import reliability
 
 
 BENCH_DATES = [datetime(2026, 4, 1), datetime(2026, 4, 2)]
@@ -111,6 +112,24 @@ def _score_model_result(batches, elapsed_seconds, expected_total_calls):
     }
 
 
+def _semantic_gold_metrics(model_name: str) -> dict:
+    original_model = config.OLLAMA_MODEL_ANALYSIS
+    config.OLLAMA_MODEL_ANALYSIS = model_name
+    try:
+        scored_rows = reliability.score_gold_set(mode="ollama", kb_summary="")
+        metrics = reliability.compute_reliability_metrics(scored_rows).as_dict()
+        return {
+            "gold_entries_used": metrics["entries_used"],
+            "semantic_mae": metrics["mae"],
+            "semantic_pearson": metrics["pearson"],
+            "semantic_topic_f1": metrics["topic_f1"],
+            "semantic_entity_sentiment_mae": metrics["entity_sentiment_mae"],
+            "semantic_verbatim_recall": metrics["verbatim_recall"],
+        }
+    finally:
+        config.OLLAMA_MODEL_ANALYSIS = original_model
+
+
 def _run_model(model_name, sample_calls):
     original_model = config.OLLAMA_MODEL_ANALYSIS
     config.OLLAMA_MODEL_ANALYSIS = model_name
@@ -154,6 +173,7 @@ def _run_model(model_name, sample_calls):
         config.OLLAMA_MODEL_ANALYSIS = original_model
     elapsed = time.perf_counter() - started
     metrics = _score_model_result(batches, elapsed, expected_total_calls=len(sample_calls))
+    metrics.update(_semantic_gold_metrics(model_name))
     metrics["batches"] = batches
     print(f"[bench] {model_name} terminé en {metrics['elapsed_seconds']}s", flush=True)
     return metrics
@@ -169,6 +189,8 @@ def _rank_models(results):
             + (metrics["kb_field_completion_rate"] * 0.15)
             + (metrics["reason_field_completion_rate"] * 0.10)
             + (metrics["softskills_completion_rate"] * 0.10)
+            + ((100 - (metrics.get("semantic_mae") or 100) * 20) * 0.10)
+            + (((metrics.get("semantic_pearson") or 0) + 1) * 25 * 0.05)
             - metrics["timed_out_batches"] * 15
             - metrics["failed_batches"] * 10
             - metrics["elapsed_seconds"] * 0.005

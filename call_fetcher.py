@@ -71,6 +71,11 @@ def _normalize_call(c: dict) -> dict:
     return {
         "call_id_internal": c.get("call_id_internal") or c.get("Call id (internal)") or c.get("id"),
         "call_id":          str(c.get("call_id") or c.get("Call id") or c.get("callId") or ""),
+        "user_id":          _parse_int(
+            c.get("user_id")
+            or c.get("userId")
+            or (c.get("user") or {}).get("id") if isinstance(c.get("user"), dict) else None
+        ),
         "line_id":          (
             _parse_int(c.get("line_id") or c.get("lineId"))
             or _LINE_NAME_TO_ID.get(c.get("line") or "")
@@ -378,6 +383,59 @@ def enrich_with_transcripts(calls: list[dict], max_with_transcript: int | None =
             call["transcript"] = raw[:max(500, config.OLLAMA_TRANSCRIPT_MAX_CHARS)] if raw else None
         else:
             call["transcript"] = None
+    return calls
+
+
+def _extract_agent_identity_from_details(details: dict | None) -> tuple[int | None, str | None]:
+    if not isinstance(details, dict):
+        return None, None
+    candidates = [
+        details.get("user"),
+        details.get("agent"),
+        (details.get("assigned_to") or {}).get("user") if isinstance(details.get("assigned_to"), dict) else None,
+        details,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        user_id = _parse_int(
+            candidate.get("id")
+            or candidate.get("user_id")
+            or candidate.get("userId")
+            or (candidate.get("user") or {}).get("id") if isinstance(candidate.get("user"), dict) else None
+        )
+        user_name = (
+            candidate.get("name")
+            or candidate.get("full_name")
+            or candidate.get("user_name")
+            or candidate.get("userName")
+            or None
+        )
+        if not user_name and (candidate.get("first_name") or candidate.get("last_name")):
+            user_name = f"{candidate.get('first_name') or ''} {candidate.get('last_name') or ''}".strip() or None
+        if user_id is not None or user_name:
+            return user_id, user_name
+    return None, None
+
+
+def enrich_with_agent_identity(calls: list[dict], max_missing_lookup: int = 25) -> list[dict]:
+    """
+    S'assure que `user_id` et `user_name` sont présents.
+    Priorité aux données worker ; fallback ponctuel vers l'API Aircall `calls/{id}`.
+    """
+    lookups = 0
+    for call in calls:
+        if call.get("user_id") is not None and call.get("user_name"):
+            continue
+        if lookups >= max_missing_lookup:
+            break
+        details = fetch_call_details(call.get("call_id"))
+        lookups += 1
+        user_id, user_name = _extract_agent_identity_from_details(details)
+        if call.get("user_id") is None and user_id is not None:
+            call["user_id"] = user_id
+        if not call.get("user_name") and user_name:
+            call["user_name"] = user_name
     return calls
 
 

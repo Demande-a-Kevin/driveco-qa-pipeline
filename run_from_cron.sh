@@ -27,6 +27,9 @@ case "$MODE" in
   weekly)
     LOG_FILE="$LOG_DIR/cron_weekly.log"
     ;;
+  reliability)
+    LOG_FILE="$LOG_DIR/cron_reliability.log"
+    ;;
   benchmark)
     LOG_FILE="$LOG_DIR/cron_benchmark.log"
     ;;
@@ -226,6 +229,8 @@ else
   write_status "failed" "exit=$exit_code"
   if [ "$MODE" = "daily" ]; then
     send_alert "critical" "Pipeline QA daily en échec (${RUN_REASON}) avec exit=${exit_code}. Vérifie le log cron_daily.log sur le Mac."
+  elif [ "$MODE" = "reliability" ]; then
+    send_alert "critical" "Pipeline QA reliability en échec (${RUN_REASON}) avec exit=${exit_code}. Vérifie le log cron_reliability.log sur le Mac."
   fi
   exit "$exit_code"
 fi

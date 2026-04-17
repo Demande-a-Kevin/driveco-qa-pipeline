@@ -1,0 +1,46 @@
+{
+  "request": {
+    "call_id": "example-mid",
+    "classified_type": "ucc_handled",
+    "factual_extract": {
+      "customer_call_reason": "Paiement refusé",
+      "transcript_usable": true,
+      "kb_compliance": {
+        "status": "partiel",
+        "article": "START - Unable to start (Web)App Driveco",
+        "rationale": "Une partie du bon parcours est suivie, mais l'alternative n'est pas assez cadrée."
+      },
+      "positives": [
+        {
+          "text": "Le client est guidé sur une première vérification",
+          "citation": "je vais me mettre avec vous sur l'application"
+        }
+      ],
+      "improvement_points": [
+        {
+          "text": "La solution proposée reste incomplète",
+          "citation": "je vous conseillerais de de"
+        }
+      ],
+      "alerts": [],
+      "procedural_steps_followed": [
+        "Vérification de l'application utilisée"
+      ],
+      "emotional_signals": [
+        "confusion"
+      ]
+    }
+  },
+  "response": {
+    "accueil": 5,
+    "ecoute_active": 6,
+    "empathie": 5,
+    "gestion_tension": null,
+    "professionnalisme": 6,
+    "clarte_communication": 6,
+    "orientation_solution": 5,
+    "cloture": 5,
+    "qualification_investigation": 6,
+    "kb_application": 5,
+    "observations": "L'appel est globalement correct mais la guidance reste incomplète et la solution n'est pas assez verrouillée."
+  }

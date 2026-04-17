@@ -1,8 +1,10 @@
 """
 metrics_builder.py — Calcule les KPIs à partir des appels classifiés.
 """
+import re
 from collections import Counter
 from datetime import datetime
+from statistics import mean, pstdev
 try:
     from zoneinfo import ZoneInfo
     _PARIS = ZoneInfo("Europe/Paris")
@@ -10,6 +12,8 @@ except ImportError:
     import pytz
     _PARIS = pytz.timezone("Europe/Paris")
 import config
+import persistence
+import voc_taxonomy
 
 
 def _icon(value: float, threshold: dict) -> str:
@@ -176,4 +180,384 @@ def compute_metrics(calls: list[dict]) -> dict:
         "abandon_rate_icon":        _icon(abandon_rate, thresholds["abandon_rate"]),
         "peak_windows":             peak_windows,
         "alerts":                   alerts,
+    }
+
+
+def call_customer_number(call: dict) -> str:
+    return "".join(ch for ch in str(call.get("from_number") or call.get("customer_number") or "") if ch.isdigit())
+
+
+def repeat_caller_rate(calls: list[dict], future_calls: list[dict] | None = None) -> float:
+    future_index = Counter()
+    for call in future_calls or []:
+        number = call_customer_number(call)
+        if number and number not in config.INTERNAL_PHONE_BLACKLIST:
+            future_index[number] += 1
+
+    callers = Counter()
+    eligible_numbers = set()
+    for call in calls or []:
+        number = call_customer_number(call)
+        if not number or number in config.INTERNAL_PHONE_BLACKLIST:
+            continue
+        callers[number] += 1
+        eligible_numbers.add(number)
+
+    if not eligible_numbers:
+        return 0.0
+    if future_calls:
+        repeated = sum(1 for number in eligible_numbers if future_index.get(number, 0) > 0)
+        return round(repeated / len(eligible_numbers) * 100, 1)
+
+    repeated_calls = sum(count for count in callers.values() if count >= 2)
+    total_calls = sum(callers.values())
+    return round(repeated_calls / max(1, total_calls) * 100, 1)
+
+
+def kb_compliance_rate(call_evaluations: list[dict]) -> float | None:
+    weights = {"conforme": 1.0, "partiel": 0.5, "non_conforme": 0.0}
+    values = []
+    for evaluation in call_evaluations or []:
+        status = evaluation.get("kb_compliance")
+        if status in weights:
+            values.append(weights[status])
+    if not values:
+        return None
+    return round(sum(values) / len(values) * 100, 1)
+
+
+def warm_transfer_success_rate(calls: list[dict]) -> float | None:
+    transfer_calls = [
+        call for call in calls or []
+        if call.get("classified_type") in {"warm_transfer", "ucc_transfer_handled", "ucc_transfer_missed"}
+    ]
+    if not transfer_calls:
+        return None
+    successes = sum(
+        1 for call in transfer_calls
+        if call.get("classified_type") in {"warm_transfer", "ucc_transfer_handled"}
+        or str(call.get("answered") or "").strip().lower() == "yes"
+    )
+    return round(successes / len(transfer_calls) * 100, 1)
+
+
+def agent_snapshot_metrics(
+    agent_id: str,
+    agent_name: str,
+    calls: list[dict],
+    call_evaluations: list[dict],
+    future_calls: list[dict] | None = None,
+) -> dict:
+    answered = [call for call in calls if call.get("answered") == "Yes"]
+    durations = [int(call.get("duration_in_call") or 0) for call in answered]
+    evaluation_index = {
+        str(evaluation.get("call_id") or ""): evaluation
+        for evaluation in call_evaluations or []
+        if evaluation.get("call_id") is not None
+    }
+    agent_evaluations = []
+    for call in calls:
+        call_id = str(call.get("call_id_internal") or call.get("call_id") or "").strip()
+        if call_id and call_id in evaluation_index:
+            agent_evaluations.append(evaluation_index[call_id])
+
+    pickup_rate = round(len(answered) / max(1, len(calls)) * 100, 1)
+    abandon_rate = round(sum(1 for call in calls if call.get("answered") != "Yes") / max(1, len(calls)) * 100, 1)
+    avg_handle_time = round(sum(durations) / len(durations)) if durations else 0
+    notes = []
+    for evaluation in agent_evaluations:
+        try:
+            notes.append(float((evaluation.get("soft_skills") or {}).get("note_globale")))
+        except (TypeError, ValueError):
+            continue
+
+    return {
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "calls_presented": len(calls),
+        "pickup_rate_pct": pickup_rate,
+        "abandon_rate_pct": abandon_rate,
+        "avg_duration_seconds": avg_handle_time,
+        "repeat_caller_rate_pct": repeat_caller_rate(calls, future_calls=future_calls),
+        "avg_soft_score": round(sum(notes) / len(notes), 1) if notes else None,
+        "coverage_pct": round(len(agent_evaluations) / max(1, len(calls)) * 100, 1),
+        "kb_compliance_rate_pct": kb_compliance_rate(agent_evaluations),
+        "warm_transfer_success_rate_pct": warm_transfer_success_rate(calls),
+    }
+
+
+def build_agent_daily_snapshots(
+    calls: list[dict],
+    call_evaluations: list[dict],
+    future_calls: list[dict] | None = None,
+) -> list[dict]:
+    grouped_calls: dict[str, list[dict]] = {}
+    agent_names: dict[str, str] = {}
+    for call in calls or []:
+        agent_id = persistence.canonical_agent_id(call)
+        if not agent_id:
+            continue
+        grouped_calls.setdefault(agent_id, []).append(call)
+        agent_names[agent_id] = str(call.get("user_name") or "").strip() or agent_id
+
+    snapshots = []
+    for agent_id, bucket in grouped_calls.items():
+        snapshots.append(agent_snapshot_metrics(agent_id, agent_names.get(agent_id, agent_id), bucket, call_evaluations, future_calls=future_calls))
+    snapshots.sort(key=lambda item: (-int(item["calls_presented"]), item["agent_name"]))
+    return snapshots
+
+
+def representative_call_ids(metric: str, calls: list[dict], evaluations: list[dict], limit: int = 3) -> list[str]:
+    evaluation_index = {
+        str(ev.get("call_id") or ""): ev
+        for ev in evaluations or []
+        if ev.get("call_id") is not None
+    }
+    ranked = []
+    for call in calls or []:
+        call_id = str(call.get("call_id_internal") or call.get("call_id") or "").strip()
+        if not call_id:
+            continue
+        evaluation = evaluation_index.get(call_id, {})
+        score = 0
+        if metric == "avg_soft_score":
+            try:
+                score = -float((evaluation.get("soft_skills") or {}).get("note_globale"))
+            except (TypeError, ValueError):
+                score = 0
+        elif metric == "pickup_rate":
+            score = 1 if call.get("answered") != "Yes" else 0
+        elif metric == "abandon_rate":
+            score = 1 if call.get("classified_type") == "abandoned" or call.get("answered") != "Yes" else 0
+        else:
+            score = int(call.get("duration_in_call") or 0)
+        ranked.append((call_id, score))
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return [call_id for call_id, _ in ranked[:limit]]
+
+
+def detect_snapshot_anomalies(
+    snapshot_date: datetime,
+    scope: str,
+    agent_id: str,
+    current_metrics: dict,
+    history_rows: list[dict],
+    calls: list[dict],
+    evaluations: list[dict],
+) -> list[dict]:
+    metrics_to_check = ("pickup_rate", "abandon_rate", "avg_soft_score")
+    anomalies = []
+    if len(history_rows) < 7:
+        return anomalies
+    for metric in metrics_to_check:
+        current_value = current_metrics.get(metric)
+        if current_value is None:
+            continue
+        series = [float(row.get(metric)) for row in history_rows if row.get(metric) is not None]
+        if len(series) < 7:
+            continue
+        baseline_mean = mean(series)
+        baseline_stddev = pstdev(series)
+        if baseline_stddev <= 0:
+            continue
+        z_score = (float(current_value) - baseline_mean) / baseline_stddev
+        if abs(z_score) <= 2:
+            continue
+        anomalies.append(
+            {
+                "id": f"anomaly:{scope}:{agent_id or 'global'}:{metric}:{snapshot_date.strftime('%Y-%m-%d')}",
+                "detected_on": snapshot_date.strftime("%Y-%m-%d"),
+                "scope": scope,
+                "agent_id": agent_id,
+                "metric": metric,
+                "z_score": round(z_score, 3),
+                "current_value": current_value,
+                "baseline_mean": round(baseline_mean, 2),
+                "baseline_stddev": round(baseline_stddev, 2),
+                "representative_call_ids": representative_call_ids(metric, calls, evaluations),
+                "context": {"history_points": len(series)},
+                "status": "new",
+            }
+        )
+    return anomalies
+
+
+def cluster_kb_gaps(call_evaluations: list[dict], limit: int = 8) -> list[dict]:
+    stopwords = {
+        "le", "la", "les", "de", "du", "des", "un", "une", "et", "ou", "en", "sur", "pour", "avec", "dans",
+        "plus", "pas", "par", "au", "aux", "ne", "que", "qui", "est", "sont", "fait", "faire", "client",
+        "agent", "appel", "driveco", "ucc", "care",
+    }
+    buckets: dict[str, dict] = {}
+    for evaluation in call_evaluations or []:
+        call_id = str(evaluation.get("call_id") or "").strip()
+        for item in evaluation.get("improvement_items") or []:
+            if item.get("kb_reference"):
+                continue
+            text = re.sub(r"[^\w\s]", " ", str(item.get("text") or "").lower())
+            tokens = [token for token in text.split() if len(token) >= 4 and token not in stopwords]
+            topic = "_".join(tokens[:3]) or "kb_gap_non_classe"
+            bucket = buckets.setdefault(topic, {"topic": topic, "frequency": 0, "example_call_ids": [], "status": "new"})
+            bucket["frequency"] += 1
+            if call_id and call_id not in bucket["example_call_ids"] and len(bucket["example_call_ids"]) < 5:
+                bucket["example_call_ids"].append(call_id)
+    rows = list(buckets.values())
+    rows.sort(key=lambda item: (-item["frequency"], item["topic"]))
+    return rows[:limit]
+
+
+def anonymize_verbatim(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", "[email masqué]", value)
+    value = re.sub(r"(?:(?:\+|00)33|0)[1-9](?:[\s\.-]?\d{2}){4}", "[téléphone masqué]", value)
+    value = re.sub(r"\b\d{9,16}\b", "[numéro masqué]", value)
+    value = re.sub(r"\b([A-Z][a-zéèêëàâîïôöùûüç]+)\s+([A-Z][a-zéèêëàâîïôöùûüç]+)\b", "[nom masqué]", value)
+    return value
+
+
+def _iter_voc_evaluations(evaluations: list[dict]) -> list[dict]:
+    rows = []
+    for evaluation in evaluations or []:
+        voc_extract = evaluation.get("voc_extract")
+        if isinstance(voc_extract, dict):
+            rows.append({"evaluation": evaluation, "voc_extract": voc_extract})
+    return rows
+
+
+def aggregate_voc_topics(evaluations: list[dict], limit: int = 8) -> list[dict]:
+    counts = Counter()
+    sentiment_scores: dict[str, list[int]] = {}
+    severity_scores: dict[str, list[int]] = {}
+    labels = voc_taxonomy.axis_label_map("topics")
+    sentiment_map = {"très_négatif": -2, "négatif": -1, "neutre": 0, "positif": 1, "très_positif": 2}
+    for row in _iter_voc_evaluations(evaluations):
+        for topic in row["voc_extract"].get("topics") or []:
+            code = topic.get("topic_code") or "autre"
+            counts[code] += 1
+            sentiment_scores.setdefault(code, []).append(sentiment_map.get(topic.get("sentiment"), 0))
+            severity_scores.setdefault(code, []).append(int(topic.get("severity") or 0))
+    output = []
+    for code, count in counts.most_common(limit):
+        sentiments = sentiment_scores.get(code) or [0]
+        severities = severity_scores.get(code) or [0]
+        output.append(
+            {
+                "topic_code": code,
+                "label": labels.get(code, code.replace("_", " ").title()),
+                "count": count,
+                "avg_sentiment": round(sum(sentiments) / len(sentiments), 2),
+                "avg_severity": round(sum(severities) / len(severities), 1),
+            }
+        )
+    return output
+
+
+def aggregate_voc_entity_sentiment(evaluations: list[dict]) -> list[dict]:
+    labels = voc_taxonomy.axis_label_map("entities")
+    sentiment_map = {"très_négatif": -2, "négatif": -1, "neutre": 0, "positif": 1, "très_positif": 2}
+    buckets: dict[str, list[int]] = {}
+    for row in _iter_voc_evaluations(evaluations):
+        for item in row["voc_extract"].get("entity_perceptions") or []:
+            code = item.get("entity_code") or "autre"
+            buckets.setdefault(code, []).append(sentiment_map.get(item.get("sentiment"), 0))
+    output = []
+    for code, values in buckets.items():
+        output.append(
+            {
+                "entity_code": code,
+                "label": labels.get(code, code.replace("_", " ").title()),
+                "mentions": len(values),
+                "avg_sentiment": round(sum(values) / len(values), 2),
+            }
+        )
+    output.sort(key=lambda item: (item["avg_sentiment"], -item["mentions"]))
+    return output
+
+
+def aggregate_voc_churn_risks(evaluations: list[dict]) -> list[dict]:
+    output = []
+    for evaluation in evaluations or []:
+        voc_extract = evaluation.get("voc_extract") or {}
+        if voc_extract.get("churn_risk_signal") not in {"modéré", "élevé"}:
+            continue
+        verbatims = voc_extract.get("verbatim_quotes") or []
+        quote = ""
+        if verbatims:
+            quote = anonymize_verbatim(verbatims[0].get("quote") or "")
+        output.append(
+            {
+                "call_id": evaluation.get("call_id"),
+                "agent": evaluation.get("agent") or evaluation.get("user_name"),
+                "risk": voc_extract.get("churn_risk_signal"),
+                "quote": quote,
+                "satisfaction_signal": voc_extract.get("satisfaction_signal"),
+            }
+        )
+    return output
+
+
+def aggregate_voc_opportunities(evaluations: list[dict], limit: int = 8) -> list[dict]:
+    counts = Counter()
+    for row in _iter_voc_evaluations(evaluations):
+        for item in (row["voc_extract"].get("product_ideas") or []) + (row["voc_extract"].get("unmet_needs") or []):
+            cleaned = re.sub(r"\s+", " ", str(item or "").strip())
+            if cleaned:
+                counts[cleaned] += 1
+    return [{"description": text, "count": count} for text, count in counts.most_common(limit)]
+
+
+def aggregate_voc_competitor_watch(evaluations: list[dict], limit: int = 6) -> list[dict]:
+    counts = Counter()
+    samples: dict[str, str] = {}
+    for row in _iter_voc_evaluations(evaluations):
+        for item in row["voc_extract"].get("competitor_mentions") or []:
+            name = re.sub(r"\s+", " ", str(item.get("competitor_name") or "").strip())
+            if not name:
+                continue
+            counts[name] += 1
+            samples.setdefault(name, anonymize_verbatim(item.get("context_quote") or ""))
+    return [{"competitor_name": name, "count": count, "sample_quote": samples.get(name, "")} for name, count in counts.most_common(limit)]
+
+
+def build_voc_summary(evaluations: list[dict]) -> dict:
+    topic_counts = Counter()
+    review_items = 0
+    verbatims = []
+    for row in _iter_voc_evaluations(evaluations):
+        voc_extract = row["voc_extract"]
+        for topic in voc_extract.get("topics") or []:
+            topic_counts[topic.get("topic_code") or "autre"] += 1
+            if topic.get("needs_taxonomy_review"):
+                review_items += 1
+        for item in voc_extract.get("entity_perceptions") or []:
+            if item.get("needs_taxonomy_review"):
+                review_items += 1
+        for quote in voc_extract.get("verbatim_quotes") or []:
+            text = anonymize_verbatim(quote.get("quote") or "")
+            if text:
+                verbatims.append(
+                    {
+                        "call_id": row["evaluation"].get("call_id"),
+                        "quote": text,
+                        "topic_code": quote.get("topic_code"),
+                        "sentiment": quote.get("sentiment"),
+                    }
+                )
+    weak_signals = [
+        {"topic_code": code, "count": count}
+        for code, count in topic_counts.items()
+        if count >= config.VOC_MIN_WEAK_SIGNAL_COUNT
+    ]
+    weak_signals.sort(key=lambda item: (-item["count"], item["topic_code"]))
+    return {
+        "top_topics": aggregate_voc_topics(evaluations),
+        "entity_sentiment": aggregate_voc_entity_sentiment(evaluations),
+        "churn_risk_calls": aggregate_voc_churn_risks(evaluations),
+        "opportunities": aggregate_voc_opportunities(evaluations),
+        "competitors": aggregate_voc_competitor_watch(evaluations),
+        "weak_signals": weak_signals,
+        "verbatims": verbatims[:5],
+        "taxonomy_review_items": review_items,
     }

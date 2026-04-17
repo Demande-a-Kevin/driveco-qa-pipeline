@@ -8,6 +8,7 @@ This repository contains a local QA pipeline for Driveco customer calls.
 - classifies calls into UCC and Driveco scopes
 - fetches Aircall AI transcripts for selected calls
 - runs local QA analysis through Ollama
+- runs a separate VoC extraction pass from the same transcripts
 - generates Markdown reports and publishes to Slack / Notion / Google Drive when configured
 
 ## Read this first
@@ -22,9 +23,12 @@ This repository contains a local QA pipeline for Driveco customer calls.
 - `call_fetcher.py`: call retrieval, line mapping, transcript enrichment
 - `call_classifier.py`: business classification rules
 - `ollama_client.py`: local LLM calls
+- `voc_taxonomy.yaml`: versioned VoC taxonomy
 - `metrics_builder.py`: KPI computation
+- `reliability.py`: gold set scoring and reliability metrics
 - `report_formatter.py`: Markdown and Slack-ready rendering
 - `notifier.py`: Slack publishing
+- `health_server.py`: local `/health` endpoint for ops / dashboard
 - `notion_reporter.py`: Notion publishing
 - `gdrive_uploader.py`: Google Drive upload when credentials are present
 - `setup_launchd.sh`: macOS automation setup
@@ -85,6 +89,7 @@ Useful logs:
 - edit the source repo, then resync the runtime
 - do not remove fallback logic unless you have a tested replacement
 - preserve reporting outputs for Slack and Markdown together
+- preserve the separation between QA agent scoring and client VoC extraction
 - be careful with line mappings and call scopes, especially UCC transfer handling
 - never commit secrets or local credential files
 

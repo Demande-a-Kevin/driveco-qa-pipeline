@@ -1,0 +1,47 @@
+{
+  "request": {
+    "call_id": "example-low",
+    "classified_type": "ucc_handled",
+    "factual_extract": {
+      "customer_call_reason": "Recharge impossible",
+      "transcript_usable": true,
+      "kb_compliance": {
+        "status": "non_conforme",
+        "article": "START - Unable to start (Web)App Driveco",
+        "rationale": "Le diagnostic n'a pas été mené correctement."
+      },
+      "positives": [],
+      "improvement_points": [
+        {
+          "text": "Ne qualifie pas assez le contexte avant d'agir",
+          "citation": "attendez, je vais regarder"
+        }
+      ],
+      "alerts": [
+        {
+          "level": "warning",
+          "message": "Appel peu structuré",
+          "call_ids": [
+            "example-low"
+          ]
+        }
+      ],
+      "procedural_steps_followed": [],
+      "emotional_signals": [
+        "frustration"
+      ]
+    }
+  },
+  "response": {
+    "accueil": 2,
+    "ecoute_active": 3,
+    "empathie": 3,
+    "gestion_tension": 4,
+    "professionnalisme": 3,
+    "clarte_communication": 3,
+    "orientation_solution": 2,
+    "cloture": 2,
+    "qualification_investigation": 2,
+    "kb_application": 2,
+    "observations": "L'agent reste peu structuré, qualifie mal le problème et ne sécurise pas de vraie solution."
+  }

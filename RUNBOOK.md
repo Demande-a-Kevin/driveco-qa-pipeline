@@ -12,6 +12,56 @@ Il couvre :
 
 ## Commandes de base
 
+### Validation Lot 1
+
+Vérifier la rubric et les schémas stricts :
+
+```bash
+python3 -m unittest tests.test_schemas
+```
+
+Source de vérité du scoring QA :
+- `rubric.yaml`
+- `schemas.py`
+- `prompts/examples/qa_*.json`
+
+### Validation Lot 2
+
+Connectivité légère avec persistance analytique :
+
+```bash
+.venv/bin/python analysis_pipeline.py --mode test
+python3 -m unittest tests.test_persistence
+```
+
+Migration SQL à appliquer côté Supabase :
+- `db/migrations/001_init.sql`
+
+### Validation Lot 6
+
+VoC séparée de la QA agent :
+
+```bash
+.venv/bin/python -m unittest tests.test_voc
+```
+
+Fichiers de référence :
+- `voc_taxonomy.yaml`
+- `prompts/voc_system.txt`
+- `db/migrations/003_voc.sql`
+
+### Validation Lots 3 à 5
+
+```bash
+.venv/bin/python -m unittest tests.test_metrics_builder tests.test_reliability
+.venv/bin/python analysis_pipeline.py --mode test
+```
+
+Migrations SQL à appliquer :
+- `db/migrations/004_metrics_agent.sql`
+- `db/migrations/005_reliability.sql`
+- `db/migrations/002_views.sql`
+
 ### Test de connectivité
 
 ```bash
@@ -66,23 +116,27 @@ cat "/Users/kev1n/Library/Application Support/driveco-qa-pipeline/runtime/qa-dri
 Indices dans le log :
 - `Slack envoyé`
 - `Analyse quotidienne terminée`
+- `Supabase désactivé` ou warnings `[persistence]` si la persistance analytique n'est pas branchée
 
 ## Fichiers de log utiles
 
 Runtime `launchd` :
 - [launchd_daily.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily.log)
 - [launchd_daily_watchdog.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily_watchdog.log)
+- [launchd_reliability.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_reliability.log)
 - [launchd_weekly.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_weekly.log)
 - [launchd_benchmark.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_benchmark.log)
 
 Logs pipeline :
 - [cron_daily.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_daily.log)
+- [cron_reliability.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_reliability.log)
 - [cron_weekly.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_weekly.log)
 - [cron_benchmark.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_benchmark.log)
 - [pipeline.log](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/pipeline.log)
 
 État :
 - [daily_status.env](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/state/daily_status.env)
+- [reliability_status.env](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/state/reliability_status.env)
 - [weekly_status.env](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/state/weekly_status.env)
 - [benchmark_status.env](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data/state/benchmark_status.env)
 
@@ -98,6 +152,7 @@ Logs pipeline :
 7. `Top 5 appels problématiques identifiés`
 8. `Analyse quotidienne terminée`
 9. `Slack envoyé`
+10. `Voix du client` dans le rapport si des transcripts exploitables existent
 
 ## Incidents fréquents
 
@@ -157,6 +212,24 @@ Fix de premier niveau :
 - réduire la taille des batches si besoin
 - resynchroniser le runtime après changement config
 
+### 5. La validation stricte JSON casse l'analyse QA
+
+Symptômes typiques :
+- `validation Ollama échouée`
+- `réponse vide`
+- JSON conforme au markdown mais pas au schéma attendu
+
+Checks :
+- lancer `python3 -m unittest tests.test_schemas`
+- vérifier `rubric.yaml`
+- vérifier les few-shots dans `prompts/examples/`
+- relire le warning exact dans `pipeline.log`
+
+Fix de premier niveau :
+- corriger le schéma attendu plutôt que réintroduire du nettoyage regex
+- vérifier que chaque point d'amélioration a une citation réellement présente dans le transcript
+- réduire le transcript envoyé si la sortie Ollama devient instable
+
 ### 5. Anthropic échoue
 
 Symptôme typique :
@@ -174,6 +247,52 @@ Cause probable :
 - `gdrive_token.json` absent
 
 Le pipeline peut finir sans Google Drive.
+
+### 7. Supabase n'écrit rien
+
+Checks :
+- `SUPABASE_URL` et `SUPABASE_SERVICE_KEY` définis dans `.env`
+- migration `db/migrations/001_init.sql` bien appliquée
+- migration `db/migrations/003_voc.sql` bien appliquée si la VoC est activée
+- `python analysis_pipeline.py --mode test`
+- recherche de warnings `[persistence]` dans `pipeline.log`
+
+Comportement attendu actuel :
+- non bloquant
+- D1 / Markdown / Slack / Notion continuent même si Supabase est absent
+
+### 8. La VoC n'apparaît pas dans le rapport
+
+Checks :
+- `ENABLE_VOC_ANALYSIS=true`
+- transcript réellement présent sur les appels analysés
+- `python -m unittest tests.test_voc`
+- présence de `voc_extract` dans `call_evaluations`
+
+Causes fréquentes :
+- citations non retrouvées dans le transcript
+- taxonomie invalide
+- migration `003_voc.sql` absente
+
+Fix de premier niveau :
+- relancer le test VoC
+- vérifier `voc_taxonomy.yaml`
+- vérifier que les quotes renvoyées par le modèle sont bien présentes dans le transcript
+- appliquer la migration `003_voc.sql`
+
+### 9. Le mode reliability paraît bloqué
+
+Cause fréquente :
+- refresh Notion KB trop long
+- Ollama lent sur plusieurs appels gold set
+
+Checks :
+- `tail -n 100 qa-driveco-data/logs/cron_reliability.log`
+- cache Notion présent dans `qa-driveco-data/cache/notion_kb_cache.json`
+- `python analysis_pipeline.py --mode reliability --date 2026-04-14`
+
+Note :
+- le mode reliability utilise d'abord le cache KB local pour éviter un refresh complet Notion
 
 ## Commandes de diagnostic utiles
 

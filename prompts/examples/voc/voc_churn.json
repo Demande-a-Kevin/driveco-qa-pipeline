@@ -1,0 +1,74 @@
+{
+  "request": {
+    "call_id": "voc-demo-1",
+    "classified_type": "ucc_handled",
+    "transcript": "[Client] Franchement votre application plante une fois sur deux et la borne du parking est encore hors service. [Agent] Je comprends. [Client] Si ça continue je vais retourner chez Electra."
+  },
+  "response": {
+    "topics": [
+      {
+        "topic_code": "app_bug",
+        "sentiment": "très_négatif",
+        "severity": 5,
+        "quote": "votre application plante une fois sur deux",
+        "needs_taxonomy_review": false
+      },
+      {
+        "topic_code": "borne_hs_terrain",
+        "sentiment": "très_négatif",
+        "severity": 5,
+        "quote": "la borne du parking est encore hors service",
+        "needs_taxonomy_review": false
+      }
+    ],
+    "entity_perceptions": [
+      {
+        "entity_code": "app_mobile",
+        "aspect_code": "fiabilite",
+        "sentiment": "très_négatif",
+        "quote": "votre application plante une fois sur deux",
+        "needs_taxonomy_review": false
+      },
+      {
+        "entity_code": "borne_materielle",
+        "aspect_code": "disponibilite",
+        "sentiment": "très_négatif",
+        "quote": "la borne du parking est encore hors service",
+        "needs_taxonomy_review": false
+      }
+    ],
+    "customer_emotions": ["frustration", "colère"],
+    "effort_score": 5,
+    "satisfaction_signal": "négatif",
+    "churn_risk_signal": "élevé",
+    "expansion_signal": false,
+    "competitor_mentions": [
+      {
+        "competitor_name": "Electra",
+        "context_quote": "je vais retourner chez Electra",
+        "sentiment": "positif"
+      }
+    ],
+    "verbatim_quotes": [
+      {
+        "quote": "votre application plante une fois sur deux",
+        "timestamp_s": null,
+        "speaker": "client",
+        "topic_code": "app_bug",
+        "sentiment": "très_négatif"
+      },
+      {
+        "quote": "Si ça continue je vais retourner chez Electra.",
+        "timestamp_s": null,
+        "speaker": "client",
+        "topic_code": "autre_concurrence",
+        "sentiment": "négatif"
+      }
+    ],
+    "unmet_needs": [
+      "Une application stable pour lancer la charge sans erreur",
+      "Une borne disponible sur le site habituel"
+    ],
+    "product_ideas": []
+  }
+}

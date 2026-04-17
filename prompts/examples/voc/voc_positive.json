@@ -1,0 +1,51 @@
+{
+  "request": {
+    "call_id": "voc-demo-2",
+    "classified_type": "ucc_handled",
+    "transcript": "[Client] Merci, la charge a redémarré rapidement et votre support a été clair. [Agent] Parfait. [Client] Je vais recommander Driveco à mon collègue."
+  },
+  "response": {
+    "topics": [
+      {
+        "topic_code": "feedback_positif",
+        "sentiment": "très_positif",
+        "severity": 1,
+        "quote": "la charge a redémarré rapidement et votre support a été clair",
+        "needs_taxonomy_review": false
+      },
+      {
+        "topic_code": "recommandation",
+        "sentiment": "très_positif",
+        "severity": 1,
+        "quote": "Je vais recommander Driveco à mon collègue",
+        "needs_taxonomy_review": false
+      }
+    ],
+    "entity_perceptions": [
+      {
+        "entity_code": "support_client",
+        "aspect_code": "clarte",
+        "sentiment": "très_positif",
+        "quote": "votre support a été clair",
+        "needs_taxonomy_review": false
+      }
+    ],
+    "customer_emotions": ["satisfaction", "soulagement"],
+    "effort_score": 1,
+    "satisfaction_signal": "positif",
+    "churn_risk_signal": "aucun",
+    "expansion_signal": true,
+    "competitor_mentions": [],
+    "verbatim_quotes": [
+      {
+        "quote": "la charge a redémarré rapidement et votre support a été clair",
+        "timestamp_s": null,
+        "speaker": "client",
+        "topic_code": "feedback_positif",
+        "sentiment": "très_positif"
+      }
+    ],
+    "unmet_needs": [],
+    "product_ideas": []
+  }
+}

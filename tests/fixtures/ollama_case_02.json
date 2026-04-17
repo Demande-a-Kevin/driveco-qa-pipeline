@@ -1,0 +1,56 @@
+{
+  "call": {
+    "call_id_internal": "3644925861",
+    "classified_type": "ucc_handled",
+    "duration_in_call": 392,
+    "transcript": "[Agent] Madame, vous n'arrivez toujours pas à recharger. [Client] Je voudrais changer mon moyen de paiement. [Agent] Alors, attendez, je vais me mettre avec vous sur l'application. [Agent] Quand vous êtes sur votre application, vous avez le petit bonhomme là sur la droite tout en bas."
+  },
+  "factual_extract": {
+    "call_id": "3644925861",
+    "classified_type": "ucc_handled",
+    "customer_call_reason": "Changer moyen de paiement",
+    "transcript_usable": true,
+    "kb_compliance": {
+      "status": "partiel",
+      "article": "START - Unable to start (Web)App Driveco",
+      "rationale": "La guidance commence bien mais la solution n'est pas fermée."
+    },
+    "positives": [
+      {
+        "text": "L'agent guide le client dans l'application",
+        "citation": "je vais me mettre avec vous sur l'application"
+      }
+    ],
+    "improvement_points": [
+      {
+        "text": "La clôture reste incomplète",
+        "citation": "quand vous êtes sur votre application"
+      }
+    ],
+    "alerts": [],
+    "procedural_steps_followed": [
+      "Guidage dans l'application"
+    ],
+    "emotional_signals": [
+      "confusion"
+    ]
+  },
+  "scorecard": {
+    "accueil": 4,
+    "ecoute_active": 6,
+    "empathie": 5,
+    "gestion_tension": null,
+    "professionnalisme": 6,
+    "clarte_communication": 6,
+    "orientation_solution": 5,
+    "cloture": 4,
+    "qualification_investigation": 5,
+    "kb_application": 5,
+    "observations": "L'appel est correct mais reste trop moyen sur la sécurisation de la solution."
+  },
+  "expected": {
+    "score_global": 5.2,
+    "errors_count": 1,
+    "warnings_count": 0
+  }
+}

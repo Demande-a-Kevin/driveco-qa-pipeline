@@ -4,50 +4,21 @@ API compatible OpenAI — même format que llm_client.py mais local, zéro coût
 
 Deux fonctions principales :
   - pre_screen_call()   : score de risque rapide sur metadata seule (0-10)
-  - analyze_batch()     : analyse QA complète d'un batch d'appels (avec/sans transcript)
+  - analyze_batch()     : analyse QA stricte d'un batch d'appels (extraction -> scoring)
 """
 import json
 import logging
 import re
 import requests
+
 import config
+import qa_prompting
+import schemas
 
 log = logging.getLogger(__name__)
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"Content-Type": "application/json"})
-
-_UCC_EVALUATION_RUBRIC = """Grille d'évaluation QA assistance Driveco/UCC à appliquer pour chaque appel :
-1. Présentation de l'agent et de la marque — poids 0.05
-   Attendu : l'agent se présente correctement et cite Driveco au début.
-2. Empathie et écoute active — poids 0.15
-   Attendu : l'agent reconnaît la gêne du client et adopte un ton compréhensif.
-3. Investigation — poids 0.05
-   Attendu : l'agent pose les bonnes questions avant d'agir.
-4. Compréhension du problème — poids 0.20
-   Attendu : la cause principale est correctement identifiée.
-5. Étapes de dépannage — poids 0.20
-   Attendu : le client est guidé dans les bonnes étapes selon le problème.
-6. Solutions alternatives — poids 0.10
-   Attendu : une alternative est proposée si la première résolution n'est pas possible.
-7. Création du ticket / escalade du dossier — poids 0.05
-   Attendu : escalade ou ticket si nécessaire, avec prochaines étapes claires.
-8. Clôture de l'échange — poids 0.05
-   Attendu : résolution ou next steps confirmées avant la fin.
-9. Qualité de la communication — poids 0.05
-   Attendu : ton poli, professionnel, accessible.
-10. Clarté et exactitude de l'information — poids 0.10
-   Attendu : informations justes et vérification que le client a compris.
-
-Règles d'usage :
-- utilise cette grille comme base principale pour positives, errors, alerts et soft_skills
-- raisonne critère par critère en interne, mais ne renvoie que le JSON demandé
-- retourne immédiatement la réponse finale, sans exposer de raisonnement
-- si un élément n'est pas observable, n'invente pas
-- si pas de transcript exploitable, laisse les sous-notes soft_skills à null quand nécessaire
-- la note_globale soft_skills doit refléter cette grille pondérée quand l'observation est possible
-- toute erreur de procédure ou de dépannage doit être confrontée à la KB fournie
-- les valeurs customer_call_reason, positives, errors et recommendations doivent être des phrases simples ou labels lisibles en français, jamais des dicts, jamais du pseudo-JSON"""
 
 
 def is_available() -> bool:
@@ -136,25 +107,10 @@ def _generate(model: str, prompt: str, max_tokens: int = 2048, timeout: int | No
 
 
 def _parse_json(raw: str) -> dict:
-    """Parse JSON depuis la réponse Ollama — gère les blocs ```json ... ```."""
-    text = raw.strip()
-    text = re.sub(r"<\|channel\>thought\s*.*?<channel\|>", "", text, flags=re.DOTALL)
+    """Parse JSON strict depuis la réponse Ollama — cleanup fences uniquement."""
+    text = re.sub(r"<\|channel\>thought\s*.*?<channel\|>", "", str(raw or ""), flags=re.DOTALL)
     text = re.sub(r"<\|channel\>.*?<channel\|>", "", text, flags=re.DOTALL)
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Cherche le premier objet JSON valide dans la réponse
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        log.warning(f"[ollama] Réponse non-JSON : {raw[:200]}")
-        return {}
+    return schemas.parse_json_strict(text)
 
 
 def _prepare_transcript_for_ollama(transcript: str) -> str:
@@ -186,38 +142,77 @@ def _prepare_transcript_for_ollama(transcript: str) -> str:
     return "\n".join(lines[:max_lines])
 
 
-def _clean_eval_text(value) -> str | None:
-    text = " ".join(str(value or "").strip().split())
-    if not text:
+def _response_schema(model_class) -> dict:
+    return model_class.model_json_schema()
+
+
+def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout: int) -> object:
+    attempt_messages = [dict(message) for message in messages]
+    last_error = None
+    for attempt in range(3):
+        raw = _chat(
+            model=config.OLLAMA_MODEL_ANALYSIS,
+            messages=attempt_messages,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            json_mode=True,
+        )
+        try:
+            payload = _parse_json(raw)
+            return model_class.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt >= 2:
+                break
+            attempt_messages = attempt_messages + [
+                {
+                    "role": "user",
+                    "content": qa_prompting.build_retry_message(
+                        schemas.validation_error_message(exc),
+                        _response_schema(model_class),
+                    ),
+                }
+            ]
+    raise ValueError(f"validation Ollama échouée: {last_error}") from last_error
+
+
+def _model_to_dict(model_object) -> dict:
+    return model_object.model_dump()
+
+
+def _analyze_single_call(call: dict, kb_summary: str) -> dict | None:
+    if not call.get("transcript"):
         return None
-    if len(text) < 4 and text.upper() not in {"B2B", "B2C", "UCC", "IVR", "CSAT"}:
-        return None
-    return text
-
-
-def _sanitize_call_evaluation(ev: dict) -> dict:
-    if not isinstance(ev, dict):
-        return {}
-
-    for list_key in ("positives", "errors", "recommendations"):
-        cleaned_items = []
-        for item in ev.get(list_key) or []:
-            cleaned = _clean_eval_text(item)
-            if cleaned:
-                cleaned_items.append(cleaned)
-        ev[list_key] = cleaned_items
-
-    cleaned_reason = _clean_eval_text(ev.get("customer_call_reason"))
-    if cleaned_reason:
-        ev["customer_call_reason"] = cleaned_reason
-    else:
-        ev["customer_call_reason"] = None
-
-    soft_skills = ev.get("soft_skills")
-    if not isinstance(soft_skills, dict):
-        ev["soft_skills"] = {}
-
-    return ev
+    extraction = _validated_chat(
+        qa_prompting.build_extraction_messages(call, kb_summary),
+        schemas.FactualExtract,
+        max_tokens=2200,
+        timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+    )
+    scoring = _validated_chat(
+        qa_prompting.build_scoring_messages(call, _model_to_dict(extraction)),
+        schemas.CriterionScorecard,
+        max_tokens=1800,
+        timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+    )
+    voc_extract = None
+    if config.ENABLE_VOC_ANALYSIS:
+        voc_extract = _validated_chat(
+            qa_prompting.build_voc_messages(call),
+            schemas.VoCExtract,
+            max_tokens=1800,
+            timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+        )
+    evaluation = schemas.build_call_evaluation(
+        call=call,
+        factual_extract=extraction,
+        scorecard=scoring,
+        model_name=config.OLLAMA_MODEL_ANALYSIS,
+        voc_extract=voc_extract,
+    )
+    payload = evaluation.model_dump()
+    payload["_model"] = config.OLLAMA_MODEL_ANALYSIS
+    return payload
 
 
 # ── Pre-screening ─────────────────────────────────────────────────────────────
@@ -425,70 +420,22 @@ def analyze_batch(system_prompt: str, batch_calls: list[dict],
     if not batch_calls:
         return []
 
-    calls_block = []
-    for c in batch_calls:
-        entry = {
-            "call_id": c.get("call_id_internal") or c.get("call_id"),
-            "type": c.get("classified_type"),
-            "duration_s": c.get("duration_in_call"),
-            "wait_s": c.get("waiting_time"),
-            "agent": c.get("user_name"),
-        }
-        entry = {k: v for k, v in entry.items() if v is not None and v != ""}
-        if c.get("answered") == "No":
-            entry["missed"] = c.get("missed_call_reason") or "abandoned"
-        if c.get("tags"):
-            entry["tags"] = c["tags"]
-        transcript = _prepare_transcript_for_ollama(c.get("transcript") or "")
-        transcript = transcript[:config.OLLAMA_TRANSCRIPT_MAX_CHARS]
-        if transcript:
-            entry["transcript"] = transcript
-        calls_block.append(entry)
-
-    user_prompt = f"""MODE : BATCH OLLAMA {batch_num}/{total_batches}
-DATE : {date_str}
-
-=== GRILLE D'ÉVALUATION QA ===
-{_UCC_EVALUATION_RUBRIC}
-
-=== KNOWLEDGE BASE ===
-{kb_summary}
-
-=== APPELS À ÉVALUER ({len(calls_block)}) ===
-{json.dumps(calls_block, indent=2, ensure_ascii=False)}
-
-Règles de sortie :
-- copie le classified_type/type de l'appel dans "classified_type"
-- "customer_call_reason" = raison principale de l'appel, courte et lisible
-- "positives" et "errors" = phrases courtes en français, jamais des objets ou fragments JSON
-- "alerts" = objets {{"level":"critical|warning|info","message":"...","call_ids":[...]}} seulement si nécessaire
-- si le transcript est insuffisant, garde soft_skills.* à null plutôt que d'inventer
-
-Évalue chaque appel. Réponds UNIQUEMENT avec le JSON, champ "call_evaluations" :
-{{"call_evaluations": [...]}}"""
-
-    try:
-        raw = _chat(
-            model=config.OLLAMA_MODEL_ANALYSIS,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=6000 if _is_gemma4_model(config.OLLAMA_MODEL_ANALYSIS) else 3000,
-            timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
-            json_mode=True,
-        )
-        result = _parse_json(raw)
-        evals = result.get("call_evaluations", [])
-        if not isinstance(evals, list):
-            return []
-        # Tag les évaluations comme produites par Ollama
-        for idx, ev in enumerate(evals):
-            evals[idx] = _sanitize_call_evaluation(ev)
-        for ev in evals:
-            ev["_model"] = config.OLLAMA_MODEL_ANALYSIS
-        return evals
-
-    except Exception as e:
-        log.warning(f"[ollama analyze_batch] échec ({e}) — batch sera traité par Claude")
-        return []
+    evaluations: list[dict] = []
+    for call in batch_calls:
+        prepared_call = dict(call)
+        transcript = _prepare_transcript_for_ollama(call.get("transcript") or "")
+        prepared_call["transcript"] = transcript[:config.OLLAMA_TRANSCRIPT_MAX_CHARS]
+        if not prepared_call.get("transcript"):
+            log.info(f"[ollama analyze_batch] appel {prepared_call.get('call_id_internal') or prepared_call.get('call_id')} ignoré: transcript insuffisant")
+            continue
+        try:
+            evaluation = _analyze_single_call(prepared_call, kb_summary)
+            if evaluation:
+                evaluations.append(evaluation)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "[ollama analyze_batch] échec call_id=%s (%s)",
+                prepared_call.get("call_id_internal") or prepared_call.get("call_id"),
+                exc,
+            )
+    return evaluations

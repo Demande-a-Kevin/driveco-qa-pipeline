@@ -23,12 +23,13 @@ _ISSUE_TYPE_LABELS = {
 }
 
 
-def _post_to_slack(blocks: list[dict], text: str = "") -> bool:
+def _post_to_slack(blocks: list[dict], text: str = "", channel: str | None = None) -> bool:
     """Envoie un message Slack via l'API HTTP directe (bot token). Retourne True si succès."""
     if config.DISABLE_SLACK_NOTIFICATIONS:
         print("[notifier] ℹ️  Slack désactivé par config — envoi ignoré")
         return True
     token = config.SLACK_BOT_TOKEN
+    target_channel = channel or config.SLACK_CHANNEL_ID
     if not token:
         print("[notifier] ⚠️  SLACK_BOT_TOKEN non défini — envoi Slack ignoré")
         return False
@@ -40,7 +41,7 @@ def _post_to_slack(blocks: list[dict], text: str = "") -> bool:
                 "Content-Type": "application/json",
             },
             json={
-                "channel": config.SLACK_CHANNEL_ID,
+                "channel": target_channel,
                 "blocks": blocks,
                 "text": text,
             },
@@ -48,7 +49,7 @@ def _post_to_slack(blocks: list[dict], text: str = "") -> bool:
         )
         data = resp.json()
         if data.get("ok"):
-            print(f"[notifier] ✅ Slack envoyé → #{config.SLACK_CHANNEL_ID}")
+            print(f"[notifier] ✅ Slack envoyé → #{target_channel}")
             return True
         else:
             print(f"[notifier] ❌ Erreur Slack : {data.get('error', 'unknown')}")
@@ -493,6 +494,25 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         })
         blocks.append({"type": "divider"})
 
+    voc_summary = analysis.get("voc_summary") or {}
+    top_topics = voc_summary.get("top_topics") or []
+    weak_signals = voc_summary.get("weak_signals") or []
+    if top_topics:
+        topic_lines = [
+            f"• *{item.get('label', item.get('topic_code'))}* — {item.get('count', 0)} mention(s)"
+            for item in top_topics[:4]
+        ]
+        if weak_signals:
+            weak_signal_line = ", ".join(
+                f"{item.get('topic_code')} ({item.get('count', 0)})" for item in weak_signals[:3]
+            )
+            topic_lines.append(f"_Signaux faibles: {weak_signal_line}_")
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Voix du client :*\n" + "\n".join(topic_lines)},
+        })
+        blocks.append({"type": "divider"})
+
     # ── Clients frustrés (appels répétés) ────────────────────────────────────
     if assistance_scope_calls:
         repeat_stats = _repeat_call_resolution_stats(assistance_scope_calls)
@@ -698,6 +718,80 @@ def send_alert(message: str, level: str = "warning") -> bool:
         },
     ]
     return _post_to_slack(blocks, text=f"ALERTE : {message}")
+
+
+def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
+    summary = analysis.get("voc_summary") or {}
+    weak_signals = summary.get("weak_signals") or []
+    churn_risk_calls = summary.get("churn_risk_calls") or []
+    if not weak_signals and not churn_risk_calls:
+        return True
+
+    date_str = date.strftime("%d/%m/%Y")
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"Voix du client — {mode} {date_str}"},
+        }
+    ]
+    if weak_signals:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Signaux faibles détectés :*\n" + "\n".join(
+                        f"• `{item.get('topic_code')}` — {item.get('count', 0)} mention(s)"
+                        for item in weak_signals[:5]
+                    ),
+                },
+            }
+        )
+    if churn_risk_calls:
+        blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Risque churn :*\n" + "\n".join(
+                        f"• Appel `{item.get('call_id', '?')}` — risque *{item.get('risk')}* — « {item.get('quote') or 'verbatim indisponible'} »"
+                        for item in churn_risk_calls[:5]
+                    ),
+                },
+            }
+        )
+    return _post_to_slack(
+        blocks,
+        text=f"Voix du client {mode} {date_str}",
+        channel=config.SLACK_VOC_ALERTS_CHANNEL_ID,
+    )
+
+
+def send_anomaly_alerts(analysis: dict, date: datetime) -> bool:
+    anomalies = analysis.get("anomalies") or []
+    if not anomalies:
+        return True
+    lines = []
+    for item in anomalies[:5]:
+        label = "#anomaly"
+        agent_suffix = f" / {item.get('agent_id')}" if item.get("agent_id") else ""
+        reps = ", ".join(f"`{call_id}`" for call_id in (item.get("representative_call_ids") or [])[:3]) or "n/a"
+        lines.append(
+            f"• {label} *{item.get('metric')}* sur `{item.get('scope')}`{agent_suffix} "
+            f"(z={item.get('z_score')}, valeur={item.get('current_value')}, base={item.get('baseline_mean')}) — appels: {reps}"
+        )
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"Anomalies KPI — {date.strftime('%d/%m/%Y')}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+        },
+    ]
+    return _post_to_slack(blocks, text=f"Anomalies KPI {date.strftime('%d/%m/%Y')}")
 
 
 def save_report(report_md: str, date: datetime, mode: str) -> Path:
