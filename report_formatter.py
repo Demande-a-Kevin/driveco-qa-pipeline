@@ -175,13 +175,18 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
 def format_daily_report(date: datetime, metrics: dict, analysis: dict) -> str:
     kpis   = analysis.get("kpis", metrics)
     scores = analysis.get("scores", {})
+    run_health = analysis.get("run_health") or {}
 
     ucc_score     = scores.get("ucc_quality_score", "N/A")
     drv_score     = scores.get("driveco_care_score", "N/A")
     ucc_just      = scores.get("ucc_score_justification", "")
     drv_just      = scores.get("driveco_score_justification", "")
 
-    lines = [
+    lines = []
+    if run_health.get("degraded"):
+        lines += [f"# ⚠️ RUN DÉGRADÉ — couverture {run_health.get('retention_rate_pct', 0)}%", ""]
+
+    lines += [
         f"# Analyse Appels — {date.strftime('%d/%m/%Y')}",
         "",
         "## Résumé",

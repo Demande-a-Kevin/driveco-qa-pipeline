@@ -62,7 +62,7 @@ Découpage :
 4. remplacer `_parse_json`, `_sanitize_call_evaluation` et la logique équivalente par :
    - cleanup minimal des fences ```json
    - validation stricte
-   - retry ciblé max 2 tentatives au total si champ manquant / type invalide
+   - retry ciblé max 3 tentatives au total si champ manquant / type invalide
 5. refactorer l'analyse Ollama en 2 passes :
    - passe extraction factuelle
    - passe scoring à partir de l'extract structuré

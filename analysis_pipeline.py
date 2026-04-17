@@ -48,6 +48,7 @@ import notifier
 import d1_client
 import config
 import persistence
+import schemas
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -692,6 +693,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
     # ── Étape 1 : Pre-screening ───────────────────────────────────────────────
     log.info(f"  [routing] Pre-screening {len(calls_to_analyze)} appels via Ollama...")
     run_prescreening(calls_to_analyze)
+    schemas.reset_clip_stats()
 
     ollama_up = ollama_client.is_available()
 
@@ -705,6 +707,16 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
 
     all_evaluations: list[dict] = []
     llm_usage = init_llm_usage_stats()
+    batch_stats = {
+        "calls_total": 0,
+        "calls_succeeded": 0,
+        "calls_failed": 0,
+        "calls_auto_truncated": 0,
+        "auto_truncated_fields": 0,
+        "retry_successes": 0,
+        "retries_used": 0,
+        "failure_reasons": {},
+    }
 
     # ── Étape 2 : Appels à faible risque → Ollama (batch=5, timeout=240s) ────
     if low_risk:
@@ -719,6 +731,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                     date.strftime("%d/%m/%Y"),
                     batch_num=i // OLLAMA_BATCH_SIZE + 1,
                     total_batches=batch_n,
+                    stats=batch_stats,
                 )
                 if evals:
                     all_evaluations.extend(evals)
@@ -746,6 +759,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                     date.strftime("%d/%m/%Y"),
                     batch_num=i // OLLAMA_BATCH_SIZE + 1,
                     total_batches=batch_n,
+                    stats=batch_stats,
                 )
                 if evals:
                     all_evaluations.extend(evals)
@@ -774,6 +788,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                 date.strftime("%d/%m/%Y"),
                 batch_num=i // batch_size + 1,
                 total_batches=batch_n,
+                stats=batch_stats,
             )
             if not evals and ENABLE_CLAUDE_HIGH_RISK_FALLBACK:
                 log.info(f"    Ollama échoué → fallback Claude activé pour batch haut risque ({len(batch)} appels)")
@@ -860,6 +875,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         "weekly_trend": consolidated.get("weekly_trend"),
         "voc_summary": voc_summary,
         "llm_usage": llm_usage,
+        "batch_stats": batch_stats,
     }
 
 
@@ -917,11 +933,19 @@ def _build_run_record(mode: str, target_date: datetime) -> dict:
         "errors_count": 0,
         "tokens_total": 0,
         "status": "started",
+        "raw": {},
     }
 
 
 def _finalize_run_record(run_record: dict, status: str, analyzed_calls_count: int, analysis: dict | None = None, errors_count: int = 0) -> None:
     llm_usage = (analysis or {}).get("llm_usage", {}) if analysis else {}
+    run_health = (analysis or {}).get("run_health", {}) if analysis else {}
+    batch_stats = (analysis or {}).get("batch_stats", {}) if analysis else {}
+    raw_payload = dict(run_record.get("raw") or {})
+    if run_health:
+        raw_payload["run_health"] = run_health
+    if batch_stats:
+        raw_payload["batch_stats"] = batch_stats
     run_record.update(
         {
             "ended_at": datetime.now(timezone.utc).isoformat(),
@@ -929,9 +953,63 @@ def _finalize_run_record(run_record: dict, status: str, analyzed_calls_count: in
             "errors_count": errors_count,
             "tokens_total": int(llm_usage.get("anthropic_input_tokens", 0) or 0) + int(llm_usage.get("anthropic_output_tokens", 0) or 0),
             "status": status,
+            "raw": raw_payload,
         }
     )
     persistence.save_llm_run(run_record)
+
+
+def _top_failure_reasons(failure_reasons: dict, limit: int = 3) -> list[dict]:
+    ordered = sorted((failure_reasons or {}).items(), key=lambda item: item[1], reverse=True)
+    return [{"reason": reason, "count": count} for reason, count in ordered[:limit]]
+
+
+def build_run_health_summary(selected_calls: int, retained_calls: int, batch_stats: dict | None = None) -> dict:
+    retention_rate = retained_calls / max(selected_calls, 1)
+    degraded = selected_calls > 0 and retention_rate < config.RUN_DEGRADED_THRESHOLD
+    failure_reasons = dict((batch_stats or {}).get("failure_reasons") or {})
+    return {
+        "selected_calls": selected_calls,
+        "retained_calls": retained_calls,
+        "rejected_calls": max(selected_calls - retained_calls, 0),
+        "retention_rate": round(retention_rate, 4),
+        "retention_rate_pct": round(retention_rate * 100),
+        "degraded": degraded,
+        "status": "degraded" if degraded else "success",
+        "calls_auto_truncated": int((batch_stats or {}).get("calls_auto_truncated", 0) or 0),
+        "auto_truncated_fields": int((batch_stats or {}).get("auto_truncated_fields", 0) or 0),
+        "retry_successes": int((batch_stats or {}).get("retry_successes", 0) or 0),
+        "top_failure_reasons": _top_failure_reasons(failure_reasons),
+    }
+
+
+def _daily_report_artifacts(target_date: datetime, analysis: dict) -> tuple[str | None, str | None]:
+    run_health = analysis.get("run_health") or {}
+    if not run_health.get("degraded"):
+        return None, None
+    title_prefix = f"⚠️ RUN DÉGRADÉ — couverture {run_health.get('retention_rate_pct', 0)}%"
+    base_path = config.REPORT_OUTPUT_DIR / f"{target_date.strftime('%Y-%m-%d')}_daily_report.md"
+    filename_suffix = None
+    if base_path.exists():
+        filename_suffix = f"rerun_{datetime.now().strftime('%H%M')}"
+    return title_prefix, filename_suffix
+
+
+def _send_degraded_run_alert(target_date: datetime, analysis: dict) -> None:
+    run_health = analysis.get("run_health") or {}
+    top_errors = run_health.get("top_failure_reasons") or []
+    top_errors_text = ", ".join(f"{item['reason']} ({item['count']})" for item in top_errors) or "raison indisponible"
+    notifier.send_alert(
+        (
+            f"Run dégradé {target_date.strftime('%d/%m/%Y')} — "
+            f"{run_health.get('retained_calls', 0)}/{run_health.get('selected_calls', 0)} évaluations retenues "
+            f"({run_health.get('retention_rate_pct', 0)}%). "
+            f"Auto-truncate: {run_health.get('auto_truncated_fields', 0)} champ(s). "
+            f"Retries réussis: {run_health.get('retry_successes', 0)}. "
+            f"Top erreurs: {top_errors_text}"
+        ),
+        level="warning",
+    )
 
 
 def _avg_soft_score(call_evaluations: list[dict]) -> float | None:
@@ -1172,6 +1250,11 @@ def run_daily(target_date: datetime):
             "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
             "llm_usage": analysis.get("llm_usage", {}),
         }
+        analysis["run_health"] = build_run_health_summary(
+            selected_calls=len(calls_to_analyze),
+            retained_calls=len(analysis.get("call_evaluations", [])),
+            batch_stats=analysis.get("batch_stats"),
+        )
 
         save_analysis_to_d1(analysis.get("call_evaluations", []))
         persistence.persist_evaluations(calls_to_analyze, analysis.get("call_evaluations", []))
@@ -1183,17 +1266,34 @@ def run_daily(target_date: datetime):
         _persist_daily_snapshot(target_date, metrics, analysis, calls)
 
         report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
-        notifier.save_report(report_md, target_date, mode="daily")
-        notifier.send_slack_notification(analysis, mode="daily", date=target_date,
-                                         calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
-        notifier.send_anomaly_alerts(analysis, target_date)
-        notifier.send_voc_alerts(analysis, mode="daily", date=target_date)
-        log.info("  ✅ Analyse quotidienne terminée.")
+        title_prefix, filename_suffix = _daily_report_artifacts(target_date, analysis)
+        notifier.save_report(
+            report_md,
+            target_date,
+            mode="daily",
+            filename_suffix=filename_suffix,
+            notion_title_prefix=title_prefix,
+        )
+        if analysis["run_health"]["degraded"]:
+            _send_degraded_run_alert(target_date, analysis)
+            log.warning(
+                "  ⚠️ Analyse quotidienne terminée en mode dégradé (%s/%s évaluations retenues)",
+                analysis["run_health"]["retained_calls"],
+                analysis["run_health"]["selected_calls"],
+            )
+        else:
+            notifier.send_slack_notification(analysis, mode="daily", date=target_date,
+                                             calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
+            notifier.send_anomaly_alerts(analysis, target_date)
+            notifier.send_voc_alerts(analysis, mode="daily", date=target_date)
+            log.info("  ✅ Analyse quotidienne terminée.")
     except Exception:
         _finalize_run_record(run_record, "failed", len(calls_to_analyze), analysis, errors_count=1)
         raise
     else:
-        _finalize_run_record(run_record, "success", len(calls_to_analyze), analysis, errors_count=0)
+        final_status = (analysis or {}).get("run_health", {}).get("status", "success")
+        final_errors = int((analysis or {}).get("run_health", {}).get("rejected_calls", 0) or 0)
+        _finalize_run_record(run_record, final_status, len(calls_to_analyze), analysis, errors_count=final_errors)
 
 
 def run_weekly(end_date: datetime):

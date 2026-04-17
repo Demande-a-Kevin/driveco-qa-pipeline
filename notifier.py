@@ -794,12 +794,19 @@ def send_anomaly_alerts(analysis: dict, date: datetime) -> bool:
     return _post_to_slack(blocks, text=f"Anomalies KPI {date.strftime('%d/%m/%Y')}")
 
 
-def save_report(report_md: str, date: datetime, mode: str) -> Path:
+def save_report(
+    report_md: str,
+    date: datetime,
+    mode: str,
+    filename_suffix: str | None = None,
+    notion_title_prefix: str | None = None,
+) -> Path:
     """
     Sauvegarde le rapport en local + Google Drive + Notion.
     Retourne le chemin local du fichier.
     """
-    filename = f"{date.strftime('%Y-%m-%d')}_{mode}_report.md"
+    suffix = f"_{filename_suffix}" if filename_suffix else ""
+    filename = f"{date.strftime('%Y-%m-%d')}_{mode}_report{suffix}.md"
     path = OUTPUT / filename
     path.write_text(report_md, encoding="utf-8")
     print(f"[notifier] 💾 Local → {path}")
@@ -814,6 +821,6 @@ def save_report(report_md: str, date: datetime, mode: str) -> Path:
         print(f"[notifier] ☁️  Drive → {gdrive_link}")
 
     # Export Notion (silencieux si API key manquante)
-    notion_reporter.save_report_to_notion(report_md, date, mode)
+    notion_reporter.save_report_to_notion(report_md, date, mode, title_prefix=notion_title_prefix)
 
     return path

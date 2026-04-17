@@ -176,7 +176,7 @@ def _create_page(title: str, blocks: list[dict]) -> str | None:
 
 # ── API publique ──────────────────────────────────────────────────────────────
 
-def save_report_to_notion(report_md: str, date: datetime, mode: str) -> str | None:
+def save_report_to_notion(report_md: str, date: datetime, mode: str, title_prefix: str | None = None) -> str | None:
     """
     Publie le rapport Markdown comme sous-page Notion sous Analytics.
 
@@ -201,6 +201,8 @@ def save_report_to_notion(report_md: str, date: datetime, mode: str) -> str | No
 
     label = "Quotidien" if mode == "daily" else "Hebdomadaire"
     title = f"Rapport QA — {date.strftime('%d/%m/%Y')} ({label})"
+    if title_prefix:
+        title = f"{title_prefix} — {title}"
 
     try:
         blocks = _md_to_notion_blocks(report_md)

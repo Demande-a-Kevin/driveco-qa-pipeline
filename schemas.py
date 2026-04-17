@@ -5,6 +5,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Literal
 
+from json_repair import loads as json_repair_loads
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 import rubric
@@ -17,6 +18,27 @@ VoCSentiment = Literal["très_négatif", "négatif", "neutre", "positif", "très
 VoCEmotion = Literal["frustration", "colère", "résignation", "soulagement", "satisfaction", "confusion", "inquiétude"]
 SatisfactionSignal = Literal["positif", "neutre", "négatif", "mixte"]
 ChurnRiskSignal = Literal["aucun", "faible", "modéré", "élevé"]
+_CLIP_EVENTS = 0
+
+
+def _clip(value, limit: int):
+    global _CLIP_EVENTS
+    if value is None:
+        return None
+    s = str(value).strip()
+    if len(s) <= limit:
+        return s
+    _CLIP_EVENTS += 1
+    return s[: limit - 1].rstrip() + "…"
+
+
+def reset_clip_stats() -> None:
+    global _CLIP_EVENTS
+    _CLIP_EVENTS = 0
+
+
+def clip_stats_snapshot() -> int:
+    return _CLIP_EVENTS
 
 
 def strip_json_fences(raw: str) -> str:
@@ -34,7 +56,10 @@ def parse_json_strict(raw: str) -> dict:
     text = strip_json_fences(raw)
     if not text:
         raise ValueError("réponse vide")
-    payload = json.loads(text)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = json_repair_loads(text)
     if not isinstance(payload, dict):
         raise ValueError("le JSON doit être un objet")
     return payload
@@ -72,13 +97,29 @@ class EvidenceItem(BaseModel):
     citation: str = Field(min_length=4, max_length=160)
     kb_reference: str | None = Field(default=None, max_length=240)
 
-    @field_validator("text", "citation", mode="before")
+    @field_validator("text", mode="before")
     @classmethod
-    def _clean_text(cls, value):
+    def _clip_text(cls, value):
         cleaned = re.sub(r"\s+", " ", str(value or "").strip())
         if not cleaned:
             raise ValueError("texte vide")
-        return cleaned
+        return _clip(cleaned, 240)
+
+    @field_validator("citation", mode="before")
+    @classmethod
+    def _clip_citation(cls, value):
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        if not cleaned:
+            raise ValueError("texte vide")
+        return _clip(cleaned, 160)
+
+    @field_validator("kb_reference", mode="before")
+    @classmethod
+    def _clip_kb_reference(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value).strip())
+        return _clip(cleaned, 240) or None
 
 
 class VoCStructuredItem(BaseModel):
@@ -90,7 +131,7 @@ class VoCStructuredItem(BaseModel):
         cleaned = re.sub(r"\s+", " ", str(value or "").strip())
         if not cleaned:
             raise ValueError("quote vide")
-        return cleaned
+        return _clip(cleaned, 240)
 
 
 class TopicMention(VoCStructuredItem):
@@ -103,7 +144,7 @@ class TopicMention(VoCStructuredItem):
     @classmethod
     def _normalize_topic_code(cls, value):
         code, _ = voc_taxonomy.normalize_taxonomy_code("topics", value)
-        return code
+        return _clip(code, 80)
 
     @model_validator(mode="after")
     def _set_topic_review(self):
@@ -123,8 +164,8 @@ class EntityPerception(VoCStructuredItem):
     def _normalize_codes(self):
         entity_code, entity_review = voc_taxonomy.normalize_taxonomy_code("entities", self.entity_code)
         aspect_code, aspect_review = voc_taxonomy.normalize_taxonomy_code("aspects", self.aspect_code)
-        self.entity_code = entity_code
-        self.aspect_code = aspect_code
+        self.entity_code = _clip(entity_code, 80)
+        self.aspect_code = _clip(aspect_code, 80)
         self.needs_taxonomy_review = bool(self.needs_taxonomy_review or entity_review or aspect_review)
         return self
 
@@ -142,13 +183,39 @@ class Quote(BaseModel):
         if value is None:
             return None
         cleaned = re.sub(r"\s+", " ", str(value or "").strip())
-        return cleaned or None
+        if not cleaned:
+            return None
+        return cleaned
+
+    @field_validator("quote", mode="before")
+    @classmethod
+    def _clip_quote(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        return _clip(cleaned, 240)
+
+    @field_validator("speaker", mode="before")
+    @classmethod
+    def _clip_speaker(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        return _clip(cleaned, 40) or None
+
+    @field_validator("topic_code", mode="before")
+    @classmethod
+    def _clip_topic_code(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        return _clip(cleaned, 80) or None
 
     @model_validator(mode="after")
     def _normalize_topic_code(self):
         if self.topic_code:
             code, _ = voc_taxonomy.normalize_taxonomy_code("topics", self.topic_code)
-            self.topic_code = code
+            self.topic_code = _clip(code, 80)
         return self
 
 
@@ -157,13 +224,21 @@ class CompetitorMention(BaseModel):
     context_quote: str = Field(min_length=4, max_length=240)
     sentiment: VoCSentiment = "neutre"
 
-    @field_validator("competitor_name", "context_quote", mode="before")
+    @field_validator("competitor_name", mode="before")
     @classmethod
-    def _clean_competitor_text(cls, value):
+    def _clip_competitor_name(cls, value):
         cleaned = re.sub(r"\s+", " ", str(value or "").strip())
         if not cleaned:
             raise ValueError("texte vide")
-        return cleaned
+        return _clip(cleaned, 120)
+
+    @field_validator("context_quote", mode="before")
+    @classmethod
+    def _clip_context_quote(cls, value):
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        if not cleaned:
+            raise ValueError("texte vide")
+        return _clip(cleaned, 240)
 
 
 class VoCExtract(BaseModel):
@@ -211,7 +286,7 @@ class AlertItem(BaseModel):
     @field_validator("message", mode="before")
     @classmethod
     def _clean_message(cls, value):
-        return re.sub(r"\s+", " ", str(value or "").strip())
+        return _clip(re.sub(r"\s+", " ", str(value or "").strip()), 240)
 
 
 class KBCompliance(BaseModel):
@@ -225,7 +300,8 @@ class KBCompliance(BaseModel):
         if value is None:
             return None
         cleaned = re.sub(r"\s+", " ", str(value).strip())
-        return cleaned or None
+        limit = 240
+        return _clip(cleaned, limit) or None
 
 
 class FactualExtract(BaseModel):
@@ -240,13 +316,25 @@ class FactualExtract(BaseModel):
     procedural_steps_followed: list[str] = Field(default_factory=list)
     emotional_signals: list[str] = Field(default_factory=list)
 
-    @field_validator("call_id", "classified_type", "customer_call_reason", mode="before")
+    @field_validator("call_id", "classified_type", mode="before")
     @classmethod
     def _clean_textish(cls, value):
         if value is None:
             return None
         cleaned = re.sub(r"\s+", " ", str(value).strip())
-        return cleaned or None
+        if not cleaned:
+            return None
+        return cleaned
+
+    @field_validator("customer_call_reason", mode="before")
+    @classmethod
+    def _clip_customer_call_reason(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value).strip())
+        if not cleaned:
+            return None
+        return _clip(cleaned, 120)
 
     @field_validator("procedural_steps_followed", "emotional_signals", mode="before")
     @classmethod
@@ -277,7 +365,7 @@ class CriterionScorecard(BaseModel):
     @field_validator("observations", mode="before")
     @classmethod
     def _clean_observations(cls, value):
-        return re.sub(r"\s+", " ", str(value or "").strip())
+        return _clip(re.sub(r"\s+", " ", str(value or "").strip()), 320)
 
     def score_map(self) -> dict[str, float | None]:
         return {
@@ -306,6 +394,11 @@ class SoftSkillScore(BaseModel):
     note_globale: float | None = Field(default=None, ge=0, le=10)
     observations: str = Field(default="", max_length=320)
 
+    @field_validator("observations", mode="before")
+    @classmethod
+    def _clip_observations(cls, value):
+        return _clip(re.sub(r"\s+", " ", str(value or "").strip()), 320)
+
 
 class CallEvaluation(BaseModel):
     call_id: str = Field(min_length=1)
@@ -327,13 +420,34 @@ class CallEvaluation(BaseModel):
     rubric_version: str = Field(default_factory=rubric.rubric_version)
     validation_warnings: list[str] = Field(default_factory=list)
 
-    @field_validator("call_id", "classified_type", "kb_article_applicable", "customer_call_reason", mode="before")
+    @field_validator("call_id", "classified_type", mode="before")
     @classmethod
     def _clean_optional_text(cls, value):
         if value is None:
             return None
         cleaned = re.sub(r"\s+", " ", str(value).strip())
-        return cleaned or None
+        if not cleaned:
+            return None
+        return cleaned
+
+    @field_validator("kb_article_applicable", mode="before")
+    @classmethod
+    def _clip_kb_article_applicable(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value).strip())
+        return _clip(cleaned, 240) or None
+
+    @field_validator("customer_call_reason", "voc_taxonomy_version", mode="before")
+    @classmethod
+    def _clip_call_eval_short_text(cls, value):
+        if value is None:
+            return None
+        cleaned = re.sub(r"\s+", " ", str(value).strip())
+        if not cleaned:
+            return None
+        limit = 120
+        return _clip(cleaned, limit)
 
     @field_validator("positives", "errors", "validation_warnings", mode="before")
     @classmethod
@@ -360,6 +474,20 @@ def validation_error_message(error: Exception) -> str:
     if isinstance(error, ValidationError):
         return error.json()
     return str(error)
+
+
+def validation_error_fields(error: Exception) -> list[str]:
+    if not isinstance(error, ValidationError):
+        return []
+    fields = []
+    for item in error.errors():
+        loc = item.get("loc") or []
+        if isinstance(loc, tuple):
+            loc = list(loc)
+        field = ".".join(str(part) for part in loc if part not in {"__root__"})
+        if field:
+            fields.append(field)
+    return fields
 
 
 def build_call_evaluation(

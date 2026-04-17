@@ -226,10 +226,19 @@ def build_voc_messages(call: dict) -> list[dict]:
     return messages
 
 
-def build_retry_message(error_text: str, schema: dict) -> str:
+def build_retry_message(error_text: str, schema: dict, invalid_fields: list[str] | None = None) -> str:
+    fields_block = ""
+    if invalid_fields:
+        fields_block = "Champs en violation:\n" + "\n".join(f"- {field}" for field in invalid_fields[:12]) + "\n\n"
     return (
         "Le JSON précédent est invalide.\n"
         f"Erreurs de validation:\n{error_text}\n\n"
+        f"{fields_block}"
+        "Contraintes strictes :\n"
+        "- citation <= 160 caractères\n"
+        "- rationale <= 240 caractères\n"
+        "- text <= 240 caractères\n"
+        "- si un champ est trop long, tronque-le proprement\n\n"
         "Renvoie uniquement un JSON corrigé, sans commentaire, conforme à ce schéma:\n"
         f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
     )

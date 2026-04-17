@@ -53,8 +53,10 @@ def _chat(model: str, messages: list[dict], max_tokens: int = 2048, timeout: int
     Plus compatible que /v1/chat/completions qui requiert une version récente.
     Retourne le texte brut de la réponse.
     """
+    # Les sorties JSON sont plus stables avec une génération déterministe.
+    temperature = 0.0 if json_mode else config.OLLAMA_TEMPERATURE
     options = {
-        "temperature": config.OLLAMA_TEMPERATURE,
+        "temperature": temperature,
         "num_predict": max_tokens,
         "top_p": config.OLLAMA_TOP_P,
         "top_k": config.OLLAMA_TOP_K,
@@ -83,8 +85,9 @@ def _chat(model: str, messages: list[dict], max_tokens: int = 2048, timeout: int
 
 def _generate(model: str, prompt: str, max_tokens: int = 2048, timeout: int | None = None,
               json_mode: bool = False) -> str:
+    temperature = 0.0 if json_mode else config.OLLAMA_TEMPERATURE
     options = {
-        "temperature": config.OLLAMA_TEMPERATURE,
+        "temperature": temperature,
         "num_predict": max_tokens,
         "top_p": config.OLLAMA_TOP_P,
         "top_k": config.OLLAMA_TOP_K,
@@ -107,7 +110,7 @@ def _generate(model: str, prompt: str, max_tokens: int = 2048, timeout: int | No
 
 
 def _parse_json(raw: str) -> dict:
-    """Parse JSON strict depuis la réponse Ollama — cleanup fences uniquement."""
+    """Parse JSON strict depuis la réponse Ollama — cleanup fences + json_repair via schemas."""
     text = re.sub(r"<\|channel\>thought\s*.*?<channel\|>", "", str(raw or ""), flags=re.DOTALL)
     text = re.sub(r"<\|channel\>.*?<channel\|>", "", text, flags=re.DOTALL)
     return schemas.parse_json_strict(text)
@@ -146,10 +149,34 @@ def _response_schema(model_class) -> dict:
     return model_class.model_json_schema()
 
 
-def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout: int) -> object:
+def _ensure_batch_stats(stats: dict | None) -> dict | None:
+    if stats is None:
+        return None
+    stats.setdefault("calls_total", 0)
+    stats.setdefault("calls_succeeded", 0)
+    stats.setdefault("calls_failed", 0)
+    stats.setdefault("calls_auto_truncated", 0)
+    stats.setdefault("auto_truncated_fields", 0)
+    stats.setdefault("retry_successes", 0)
+    stats.setdefault("retries_used", 0)
+    stats.setdefault("failure_reasons", {})
+    return stats
+
+
+def _summarize_error(exc: Exception) -> str:
+    if isinstance(exc, ValueError) and "Expecting" in str(exc):
+        return "json_invalid"
+    fields = schemas.validation_error_fields(exc)
+    if fields:
+        return ", ".join(fields[:3])
+    text = str(exc).strip()
+    return text[:160] if text else exc.__class__.__name__
+
+
+def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout: int, stats: dict | None = None) -> object:
     attempt_messages = [dict(message) for message in messages]
     last_error = None
-    max_attempts = 2
+    max_attempts = 3  # 1 passe initiale + 2 retries ciblés.
     for attempt in range(max_attempts):
         raw = _chat(
             model=config.OLLAMA_MODEL_ANALYSIS,
@@ -160,6 +187,9 @@ def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout:
         )
         try:
             payload = _parse_json(raw)
+            if attempt > 0 and stats is not None:
+                stats["retry_successes"] += 1
+                stats["retries_used"] += attempt
             return model_class.model_validate(payload)
         except Exception as exc:  # noqa: BLE001
             last_error = exc
@@ -171,6 +201,7 @@ def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout:
                     "content": qa_prompting.build_retry_message(
                         schemas.validation_error_message(exc),
                         _response_schema(model_class),
+                        invalid_fields=schemas.validation_error_fields(exc),
                     ),
                 }
             ]
@@ -181,7 +212,7 @@ def _model_to_dict(model_object) -> dict:
     return model_object.model_dump()
 
 
-def _analyze_single_call(call: dict, kb_summary: str) -> dict | None:
+def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None) -> dict | None:
     if not call.get("transcript"):
         return None
     extraction = _validated_chat(
@@ -189,12 +220,14 @@ def _analyze_single_call(call: dict, kb_summary: str) -> dict | None:
         schemas.FactualExtract,
         max_tokens=2200,
         timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+        stats=stats,
     )
     scoring = _validated_chat(
         qa_prompting.build_scoring_messages(call, _model_to_dict(extraction)),
         schemas.CriterionScorecard,
         max_tokens=1800,
         timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+        stats=stats,
     )
     voc_extract = None
     if config.ENABLE_VOC_ANALYSIS:
@@ -203,6 +236,7 @@ def _analyze_single_call(call: dict, kb_summary: str) -> dict | None:
             schemas.VoCExtract,
             max_tokens=1800,
             timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+            stats=stats,
         )
     evaluation = schemas.build_call_evaluation(
         call=call,
@@ -412,7 +446,8 @@ def pre_screen_batch(calls: list[dict]) -> dict[str, tuple[float, str]]:
 
 def analyze_batch(system_prompt: str, batch_calls: list[dict],
                   kb_summary: str, date_str: str,
-                  batch_num: int = 1, total_batches: int = 1) -> list[dict]:
+                  batch_num: int = 1, total_batches: int = 1,
+                  stats: dict | None = None) -> list[dict]:
     """
     Analyse QA d'un batch d'appels via Ollama.
     Retourne une liste de call_evaluations (même format que llm_client.analyze).
@@ -421,19 +456,33 @@ def analyze_batch(system_prompt: str, batch_calls: list[dict],
     if not batch_calls:
         return []
 
+    batch_stats = _ensure_batch_stats(stats)
     evaluations: list[dict] = []
     for call in batch_calls:
+        if batch_stats is not None:
+            batch_stats["calls_total"] += 1
         prepared_call = dict(call)
         transcript = _prepare_transcript_for_ollama(call.get("transcript") or "")
         prepared_call["transcript"] = transcript[:config.OLLAMA_TRANSCRIPT_MAX_CHARS]
         if not prepared_call.get("transcript"):
             log.info(f"[ollama analyze_batch] appel {prepared_call.get('call_id_internal') or prepared_call.get('call_id')} ignoré: transcript insuffisant")
             continue
+        clip_before = schemas.clip_stats_snapshot()
         try:
-            evaluation = _analyze_single_call(prepared_call, kb_summary)
+            evaluation = _analyze_single_call(prepared_call, kb_summary, stats=batch_stats)
             if evaluation:
                 evaluations.append(evaluation)
+                if batch_stats is not None:
+                    batch_stats["calls_succeeded"] += 1
+                    clipped_fields = schemas.clip_stats_snapshot() - clip_before
+                    if clipped_fields > 0:
+                        batch_stats["calls_auto_truncated"] += 1
+                        batch_stats["auto_truncated_fields"] += clipped_fields
         except Exception as exc:  # noqa: BLE001
+            if batch_stats is not None:
+                batch_stats["calls_failed"] += 1
+                reason = _summarize_error(exc)
+                batch_stats["failure_reasons"][reason] = batch_stats["failure_reasons"].get(reason, 0) + 1
             log.warning(
                 "[ollama analyze_batch] échec call_id=%s (%s)",
                 prepared_call.get("call_id_internal") or prepared_call.get("call_id"),

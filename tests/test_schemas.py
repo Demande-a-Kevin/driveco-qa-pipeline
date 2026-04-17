@@ -38,6 +38,35 @@ class SchemaValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             schemas.parse_json_strict('["not-an-object"]')
 
+    def test_truncates_long_text_fields_deterministically(self):
+        long_text = "x" * 400
+        evidence = schemas.EvidenceItem.model_validate(
+            {
+                "text": long_text,
+                "citation": long_text,
+                "kb_reference": long_text,
+            }
+        )
+        kb = schemas.KBCompliance.model_validate(
+            {
+                "status": "conforme",
+                "article": long_text,
+                "rationale": long_text,
+            }
+        )
+
+        self.assertEqual(len(evidence.text), 240)
+        self.assertTrue(evidence.text.endswith("…"))
+        self.assertEqual(len(evidence.citation), 160)
+        self.assertTrue(evidence.citation.endswith("…"))
+        self.assertEqual(len(kb.rationale), 240)
+        self.assertTrue(kb.rationale.endswith("…"))
+
+    def test_strict_json_parser_repairs_common_invalid_json(self):
+        payload = schemas.parse_json_strict('{"call_id":"1","classified_type":"ucc_handled",}')
+        self.assertEqual(payload["call_id"], "1")
+        self.assertEqual(payload["classified_type"], "ucc_handled")
+
 
 if __name__ == "__main__":
     unittest.main()

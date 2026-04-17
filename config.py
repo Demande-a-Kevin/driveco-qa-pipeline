@@ -130,6 +130,7 @@ ENABLE_CLAUDE_SHADOW = os.getenv("ENABLE_CLAUDE_SHADOW", "false").strip().lower(
 CLAUDE_SHADOW_SAMPLE_PCT = float(os.getenv("CLAUDE_SHADOW_SAMPLE_PCT", "0.10"))
 RELIABILITY_MAE_ALERT_THRESHOLD = float(os.getenv("RELIABILITY_MAE_ALERT_THRESHOLD", "1.0"))
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8788"))
+RUN_DEGRADED_THRESHOLD = float(os.getenv("RUN_DEGRADED_THRESHOLD", "0.5"))
 
 # ── Lignes Aircall ───────────────────────────────────────────────────────────
 # Lignes analysées pour le QA UCC (assistance + transferts chauds vers Care)

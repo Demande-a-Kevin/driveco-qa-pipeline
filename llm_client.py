@@ -110,6 +110,7 @@ def analyze(
                     "content": qa_prompting.build_retry_message(
                         schemas.validation_error_message(exc),
                         response_model.model_json_schema(),
+                        invalid_fields=schemas.validation_error_fields(exc),
                     ),
                 }
             ]

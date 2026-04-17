@@ -92,6 +92,7 @@ Useful logs:
 - preserve the separation between QA agent scoring and client VoC extraction
 - be careful with line mappings and call scopes, especially UCC transfer handling
 - keep `daily_kpi_snapshot.agent_id = ''` for global snapshots when `scope = 'global'`
+- keep `RUN_DEGRADED_THRESHOLD` configurable and mark empty/low-retention daily reruns as `degraded`
 - never commit secrets or local credential files
 
 ## External dependency
