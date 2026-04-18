@@ -1050,13 +1050,19 @@ def _future_calls_for_repeat_cohort(target_date: datetime) -> list[dict]:
 def _persist_daily_snapshot(target_date: datetime, metrics: dict, analysis: dict, total_calls: list[dict]) -> None:
     future_calls = _future_calls_for_repeat_cohort(target_date)
     evaluations = analysis.get("call_evaluations", [])
-    enriched_metrics = dict(metrics)
-    enriched_metrics["repeat_caller_rate_pct"] = metrics_builder.repeat_caller_rate(total_calls, future_calls=future_calls)
-    enriched_metrics["avg_soft_score"] = _avg_soft_score(evaluations)
-    enriched_metrics["kb_compliance_rate_pct"] = metrics_builder.kb_compliance_rate(evaluations)
-    enriched_metrics["warm_transfer_success_rate_pct"] = metrics_builder.warm_transfer_success_rate(total_calls)
-    enriched_metrics["fcr_rate_pct"] = metrics_builder.first_call_resolution_rate(evaluations)
-    enriched_metrics["coverage_pct"] = (analysis.get("analysis_meta") or {}).get("actual_coverage_pct")
+    # Enrichissement in-place : le formatter Markdown, le snapshot Supabase et les logs
+    # doivent tous lire la même source. Avant : `enriched_metrics = dict(metrics)` créait une
+    # copie locale qui n'était jamais propagée au formatter — résultat : Conformité KB affichée
+    # à 0% alors que la colonne kb_compliance_rate valait 57.1 en base.
+    metrics.update({
+        "repeat_caller_rate_pct": metrics_builder.repeat_caller_rate(total_calls, future_calls=future_calls),
+        "avg_soft_score": _avg_soft_score(evaluations),
+        "kb_compliance_rate_pct": metrics_builder.kb_compliance_rate(evaluations),
+        "warm_transfer_success_rate_pct": metrics_builder.warm_transfer_success_rate(total_calls),
+        "fcr_rate_pct": metrics_builder.first_call_resolution_rate(evaluations),
+        "coverage_pct": (analysis.get("analysis_meta") or {}).get("actual_coverage_pct"),
+    })
+    enriched_metrics = metrics
     history = [
         row for row in persistence.fetch_daily_snapshots("global", days=14, agent_id="")
         if str(row.get("date")) < target_date.strftime("%Y-%m-%d")

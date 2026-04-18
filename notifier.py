@@ -17,6 +17,34 @@ OUTPUT = config.REPORT_OUTPUT_DIR
 
 _SLACK_API_URL = "https://slack.com/api/chat.postMessage"
 _AIRCALL_ASSET_BASE = "https://asset.aircall.io/calls"
+
+
+def _slack_sent_flag(kind: str, mode: str, date: datetime) -> Path:
+    """Chemin du flag de déduplication Slack.
+
+    `kind="report"` conserve le nom historique `.slack_sent_{mode}_{date}.flag`
+    pour rester compatible avec `run_daily_watchdog.sh` et les runtimes en prod.
+    Les autres types (`voc`, `anomaly`) utilisent un flag distinct pour permettre
+    de rejouer un sous-ensemble sans déclencher la republication du rapport principal.
+    """
+    date_str = date.strftime("%Y-%m-%d")
+    if kind == "report":
+        return OUTPUT / f".slack_sent_{mode}_{date_str}.flag"
+    return OUTPUT / f".slack_sent_{kind}_{mode}_{date_str}.flag"
+
+
+def _slack_already_sent(kind: str, mode: str, date: datetime) -> bool:
+    return _slack_sent_flag(kind, mode, date).exists()
+
+
+def _mark_slack_sent(kind: str, mode: str, date: datetime) -> None:
+    flag = _slack_sent_flag(kind, mode, date)
+    try:
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.touch()
+    except OSError as exc:
+        print(f"[notifier] ⚠️  impossible de créer flag dédup {flag}: {exc}")
+
 _ISSUE_TYPE_LABELS = {
     "manque_d_empathie": "Manque d'empathie",
     "mauvaise_qualification_b2b_b2c": "Mauvaise qualification B2B/B2C",
@@ -717,9 +745,7 @@ def send_slack_notification(analysis: dict, mode: str, date: datetime,
                             ucc_calls: list[dict] = None,
                             qa_calls: list[dict] = None) -> bool:
     """Envoie le rapport dans #drv_ucc_ops. 1 seul envoi par jour (déduplication flag file)."""
-    # Déduplication : on ne poste qu'une fois par jour par mode
-    flag_file = OUTPUT / f".slack_sent_{mode}_{date.strftime('%Y-%m-%d')}.flag"
-    if flag_file.exists():
+    if _slack_already_sent("report", mode, date):
         print(f"[notifier] ℹ️  Slack {mode} {date.strftime('%Y-%m-%d')} déjà envoyé — ignoré")
         return True
 
@@ -727,7 +753,7 @@ def send_slack_notification(analysis: dict, mode: str, date: datetime,
     fallback = f"Rapport {mode} Driveco {date.strftime('%d/%m/%Y')}"
     ok = _post_to_slack(blocks, text=fallback)
     if ok:
-        flag_file.touch()
+        _mark_slack_sent("report", mode, date)
     return ok
 
 
@@ -752,6 +778,9 @@ def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
     weak_signals = summary.get("weak_signals") or []
     churn_risk_calls = summary.get("churn_risk_calls") or []
     if not weak_signals and not churn_risk_calls:
+        return True
+    if _slack_already_sent("voc", mode, date):
+        print(f"[notifier] ℹ️  Slack VoC {mode} {date.strftime('%Y-%m-%d')} déjà envoyé — ignoré")
         return True
 
     date_str = date.strftime("%d/%m/%Y")
@@ -788,16 +817,22 @@ def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
                 },
             }
         )
-    return _post_to_slack(
+    ok = _post_to_slack(
         blocks,
         text=f"Voix du client {mode} {date_str}",
         channel=config.SLACK_VOC_ALERTS_CHANNEL_ID,
     )
+    if ok:
+        _mark_slack_sent("voc", mode, date)
+    return ok
 
 
 def send_anomaly_alerts(analysis: dict, date: datetime) -> bool:
     anomalies = analysis.get("anomalies") or []
     if not anomalies:
+        return True
+    if _slack_already_sent("anomaly", "daily", date):
+        print(f"[notifier] ℹ️  Slack anomalies {date.strftime('%Y-%m-%d')} déjà envoyé — ignoré")
         return True
     lines = []
     for item in anomalies[:5]:
@@ -818,7 +853,10 @@ def send_anomaly_alerts(analysis: dict, date: datetime) -> bool:
             "text": {"type": "mrkdwn", "text": "\n".join(lines)},
         },
     ]
-    return _post_to_slack(blocks, text=f"Anomalies KPI {date.strftime('%d/%m/%Y')}")
+    ok = _post_to_slack(blocks, text=f"Anomalies KPI {date.strftime('%d/%m/%Y')}")
+    if ok:
+        _mark_slack_sent("anomaly", "daily", date)
+    return ok
 
 
 def save_report(
