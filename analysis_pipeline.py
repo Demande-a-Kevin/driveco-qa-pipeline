@@ -19,6 +19,7 @@ import math
 import random
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -718,84 +719,75 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         "failure_reasons": {},
     }
 
-    # ── Étape 2 : Appels à faible risque → Ollama (batch=5, timeout=240s) ────
-    if low_risk:
-        if ollama_up:
-            log.info(f"  [Ollama] Analyse {len(low_risk)} appels risque faible (batches de {OLLAMA_BATCH_SIZE})...")
-            batch_n = (len(low_risk) + OLLAMA_BATCH_SIZE - 1) // OLLAMA_BATCH_SIZE
-            for i in range(0, len(low_risk), OLLAMA_BATCH_SIZE):
-                batch = low_risk[i:i + OLLAMA_BATCH_SIZE]
-                batch_kb_summary = get_batch_kb_excerpt(batch)
-                evals = ollama_client.analyze_batch(
-                    SYSTEM_PROMPT, batch, batch_kb_summary,
-                    date.strftime("%d/%m/%Y"),
-                    batch_num=i // OLLAMA_BATCH_SIZE + 1,
-                    total_batches=batch_n,
-                    stats=batch_stats,
-                )
-                if evals:
-                    all_evaluations.extend(evals)
-                    log.info(f"    → {len(evals)} évaluations Ollama (risque faible)")
-                else:
-                    if ENABLE_CLAUDE_LOW_RISK_FALLBACK:
-                        log.info(f"    Ollama échoué → fallback Claude activé pour ce batch ({len(batch)} appels)")
-                        evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_standard())
-                        all_evaluations.extend(sanitize_call_evaluations(evals, context="low_risk_fallback"))
-                    else:
-                        log.info(f"    Ollama échoué → batch faible ignoré pour limiter le coût token ({len(batch)} appels)")
-        else:
-            log.info(f"  [routing] Ollama indisponible → appels faible risque ignorés pour limiter le coût ({len(low_risk)})")
+    # ── Étapes 2-4 : Analyse Ollama parallélisée par tier de risque ───────────
+    # Les 3 tiers tournent chacun via un ThreadPoolExecutor borné par
+    # config.OLLAMA_ANALYSIS_MAX_WORKERS. Préserve le fallback Claude par tier
+    # et le sous-batching spécifique haut-risque.
+    def _run_ollama_tier(
+        tier_calls: list[dict],
+        tier_label: str,
+        batch_size: int,
+        fallback_enabled: bool,
+        fallback_model_getter,
+        sanitize_context: str,
+    ) -> None:
+        if not tier_calls:
+            return
+        if not ollama_up:
+            log.info(f"  [routing] Ollama indisponible → appels {tier_label} ignorés ({len(tier_calls)})")
+            return
+        batch_n = (len(tier_calls) + batch_size - 1) // batch_size
+        log.info(f"  [Ollama] Analyse {len(tier_calls)} appels {tier_label} (batches de {batch_size}, workers={config.OLLAMA_ANALYSIS_MAX_WORKERS})...")
 
-    # ── Étape 3 : Appels à risque moyen → Ollama (batch=5, timeout=240s) ─────
-    if medium_risk:
-        if ollama_up:
-            log.info(f"  [Ollama] Analyse {len(medium_risk)} appels risque moyen (batches de {OLLAMA_BATCH_SIZE})...")
-            batch_n = (len(medium_risk) + OLLAMA_BATCH_SIZE - 1) // OLLAMA_BATCH_SIZE
-            for i in range(0, len(medium_risk), OLLAMA_BATCH_SIZE):
-                batch = medium_risk[i:i + OLLAMA_BATCH_SIZE]
-                batch_kb_summary = get_batch_kb_excerpt(batch)
-                evals = ollama_client.analyze_batch(
-                    SYSTEM_PROMPT, batch, batch_kb_summary,
-                    date.strftime("%d/%m/%Y"),
-                    batch_num=i // OLLAMA_BATCH_SIZE + 1,
-                    total_batches=batch_n,
-                    stats=batch_stats,
-                )
-                if evals:
-                    all_evaluations.extend(evals)
-                    log.info(f"    → {len(evals)} évaluations Ollama (risque moyen)")
-                else:
-                    if ENABLE_CLAUDE_MEDIUM_RISK_FALLBACK:
-                        log.info(f"    Ollama échoué → fallback Claude activé pour ce batch ({len(batch)} appels)")
-                        evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_standard())
-                        all_evaluations.extend(sanitize_call_evaluations(evals, context="medium_risk_fallback"))
-                    else:
-                        log.info(f"    Ollama échoué → batch moyen ignoré pour limiter le coût token ({len(batch)} appels)")
-        else:
-            log.info(f"  [routing] Ollama indisponible → appels risque moyen ignorés pour limiter le coût ({len(medium_risk)})")
-
-    # ── Étape 4 : Appels à haut risque → Ollama, puis fallback Anthropic si activé ──
-    if high_risk:
-        log.info(f"  [Ollama] Analyse {len(high_risk)} appels haut risque (>= {config.HAIKU_REEVAL_THRESHOLD})...")
-        batch_size = max(1, min(OLLAMA_BATCH_SIZE, 2))
-        batch_n = (len(high_risk) + batch_size - 1) // batch_size
-        for i in range(0, len(high_risk), batch_size):
-            batch = high_risk[i:i + batch_size]
-            log.info(f"  Batch Ollama (haut risque) {i // batch_size + 1}/{batch_n} — {len(batch)} appels...")
+        def _process_batch(batch_idx: int, batch: list[dict]) -> list[dict]:
             batch_kb_summary = get_batch_kb_excerpt(batch)
             evals = ollama_client.analyze_batch(
                 SYSTEM_PROMPT, batch, batch_kb_summary,
                 date.strftime("%d/%m/%Y"),
-                batch_num=i // batch_size + 1,
+                batch_num=batch_idx + 1,
                 total_batches=batch_n,
                 stats=batch_stats,
             )
-            if not evals and ENABLE_CLAUDE_HIGH_RISK_FALLBACK:
-                log.info(f"    Ollama échoué → fallback Claude activé pour batch haut risque ({len(batch)} appels)")
-                evals = llm_client.analyze_batch(batch, batch_kb_summary, model=llm_client.get_model_flagged())
-            evals = sanitize_call_evaluations(evals, context="high_risk_batch")
-            all_evaluations.extend(evals)
-            log.info(f"    → {len(evals)} évaluations retenues (haut risque)")
+            if not evals and fallback_enabled:
+                log.info(f"    Ollama échoué → fallback Claude activé pour batch {tier_label} ({len(batch)} appels)")
+                evals = llm_client.analyze_batch(batch, batch_kb_summary, model=fallback_model_getter())
+            return sanitize_call_evaluations(evals, context=sanitize_context)
+
+        batches = [tier_calls[i:i + batch_size] for i in range(0, len(tier_calls), batch_size)]
+        workers = max(1, min(config.OLLAMA_ANALYSIS_MAX_WORKERS, len(batches)))
+        if workers == 1:
+            for idx, batch in enumerate(batches):
+                evals = _process_batch(idx, batch)
+                all_evaluations.extend(evals)
+                log.info(f"    → {len(evals)} évaluations retenues ({tier_label}, batch {idx+1}/{batch_n})")
+            return
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_process_batch, idx, batch): idx for idx, batch in enumerate(batches)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    evals = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(f"    Batch {tier_label} #{idx+1} KO ({exc})")
+                    evals = []
+                all_evaluations.extend(evals)
+                log.info(f"    → {len(evals)} évaluations retenues ({tier_label}, batch {idx+1}/{batch_n})")
+
+    _run_ollama_tier(
+        low_risk, "risque faible", OLLAMA_BATCH_SIZE,
+        ENABLE_CLAUDE_LOW_RISK_FALLBACK, llm_client.get_model_standard,
+        "low_risk_fallback",
+    )
+    _run_ollama_tier(
+        medium_risk, "risque moyen", OLLAMA_BATCH_SIZE,
+        ENABLE_CLAUDE_MEDIUM_RISK_FALLBACK, llm_client.get_model_standard,
+        "medium_risk_fallback",
+    )
+    _run_ollama_tier(
+        high_risk, "haut risque", max(1, min(OLLAMA_BATCH_SIZE, 2)),
+        ENABLE_CLAUDE_HIGH_RISK_FALLBACK, llm_client.get_model_flagged,
+        "high_risk_batch",
+    )
 
     # ── Étape 5 : Fallback Haiku garanti si 0 évaluations ────────────────────
     # Si Ollama a échoué sur tous les batches, on analyse au minimum un
@@ -1218,10 +1210,12 @@ def run_daily(target_date: datetime):
             log.info("  ✅ Analyse quotidienne terminée.")
             return
 
-        # Sélection 75% des appels QA analysables (stratifiée)
+        # Sélection 75% des appels QA analysables (stratifiée) + cap daily
+        # pour tenir le budget runtime du rapport du matin.
         calls_to_analyze = select_calls_for_analysis(
             qa_calls,
             config.ANALYSIS_COVERAGE_PCT,
+            max_calls=config.DAILY_MAX_CALLS_ANALYZED,
         )
         eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
         eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])

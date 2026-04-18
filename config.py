@@ -168,6 +168,19 @@ ANALYSIS_COVERAGE_PCT   = 0.75   # 75% des appels analysables
 ANALYSIS_BATCH_SIZE     = 10     # Appels par batch (metadata-only ou mixte)
 ANALYSIS_BATCH_SIZE_TX  = 5      # Appels par batch quand transcript inclus
 TOP_PROBLEMATIC_CALLS   = 5      # Top appels problématiques isolés dans le rapport
+# Cap dur sur le nombre d'appels QA analysés en daily (None = pas de cap).
+# Permet de tenir le budget runtime du rapport du matin. Le weekly reste sans cap.
+DAILY_MAX_CALLS_ANALYZED = _optional_int_env("DAILY_MAX_CALLS_ANALYZED", 35)
+# Nombre de batches Ollama traités en parallèle (ThreadPoolExecutor).
+# 1 = comportement séquentiel historique. Gemma4 tolère 2-3 sur Mac mini.
+OLLAMA_ANALYSIS_MAX_WORKERS = max(1, int(os.getenv("OLLAMA_ANALYSIS_MAX_WORKERS", "2")))
+# Cache idempotent des analyses Ollama (hash transcript+prompt+modèle).
+# Évite de re-payer le temps Ollama sur un rerun manuel même date.
+LLM_CACHE_ENABLED = os.getenv("LLM_CACHE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Version du prompt QA : à bumper manuellement quand on modifie
+# qa_prompting.build_extraction_messages / build_scoring_messages / build_voc_messages
+# ou le schéma CallEvaluation. Invalide le cache en douceur.
+LLM_ANALYSIS_CACHE_VERSION = os.getenv("LLM_ANALYSIS_CACHE_VERSION", "v1")
 LONG_CALL_THRESHOLD_SECONDS = int(os.getenv("LONG_CALL_THRESHOLD_SECONDS", "900"))
 PEAK_WINDOW_SECONDS         = int(os.getenv("PEAK_WINDOW_SECONDS", "7200"))
 PEAK_WINDOWS_TOP_N          = int(os.getenv("PEAK_WINDOWS_TOP_N", "3"))
@@ -190,6 +203,10 @@ NOTION_CACHE_PATH   = _resolve_path_env(
     "NOTION_CACHE_PATH",
     REPORT_OUTPUT_DIR / "cache" / "notion_kb_cache.json",
 )
+LLM_CACHE_DIR       = _resolve_path_env(
+    "LLM_CACHE_DIR",
+    REPORT_OUTPUT_DIR / "cache" / "ollama_analysis",
+)
 DISABLE_SLACK_NOTIFICATIONS = os.getenv("DISABLE_SLACK_NOTIFICATIONS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DISABLE_EXTERNAL_PUBLISH = os.getenv("DISABLE_EXTERNAL_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -197,3 +214,4 @@ DISABLE_EXTERNAL_PUBLISH = os.getenv("DISABLE_EXTERNAL_PUBLISH", "false").strip(
 REPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 NOTION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+LLM_CACHE_DIR.mkdir(parents=True, exist_ok=True)

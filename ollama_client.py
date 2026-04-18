@@ -6,6 +6,7 @@ Deux fonctions principales :
   - pre_screen_call()   : score de risque rapide sur metadata seule (0-10)
   - analyze_batch()     : analyse QA stricte d'un batch d'appels (extraction -> scoring)
 """
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +21,48 @@ log = logging.getLogger(__name__)
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"Content-Type": "application/json"})
+
+
+# ── Cache idempotent des analyses QA ─────────────────────────────────────────
+# Hash (transcript + kb_summary + modèle + version prompt + flag VoC) → payload.
+# Permet qu'un rerun manuel sur la même date ne repaie pas le temps Ollama.
+# Bump LLM_ANALYSIS_CACHE_VERSION dans config.py quand les prompts changent.
+
+def _cache_key(call: dict, kb_summary: str) -> str:
+    payload = {
+        "transcript": call.get("transcript") or "",
+        "kb": kb_summary or "",
+        "model": config.OLLAMA_MODEL_ANALYSIS,
+        "voc": bool(config.ENABLE_VOC_ANALYSIS),
+        "version": getattr(config, "LLM_ANALYSIS_CACHE_VERSION", "v1"),
+    }
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _cache_get(key: str) -> dict | None:
+    if not getattr(config, "LLM_CACHE_ENABLED", False):
+        return None
+    path = config.LLM_CACHE_DIR / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.debug(f"[llm_cache] lecture KO {path.name}: {exc}")
+        return None
+
+
+def _cache_put(key: str, payload: dict) -> None:
+    if not getattr(config, "LLM_CACHE_ENABLED", False) or not isinstance(payload, dict):
+        return
+    try:
+        path = config.LLM_CACHE_DIR / f"{key}.json"
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+    except OSError as exc:
+        log.debug(f"[llm_cache] écriture KO: {exc}")
 
 
 def is_available() -> bool:
@@ -216,6 +259,16 @@ def _model_to_dict(model_object) -> dict:
 def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None) -> dict | None:
     if not call.get("transcript"):
         return None
+    cache_key = _cache_key(call, kb_summary)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        if stats is not None:
+            stats["cache_hits"] = stats.get("cache_hits", 0) + 1
+        log.info(
+            "[ollama cache] hit call_id=%s",
+            call.get("call_id_internal") or call.get("call_id"),
+        )
+        return cached
     extraction = _validated_chat(
         qa_prompting.build_extraction_messages(call, kb_summary),
         schemas.FactualExtract,
@@ -249,6 +302,7 @@ def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None)
     )
     payload = evaluation.model_dump()
     payload["_model"] = config.OLLAMA_MODEL_ANALYSIS
+    _cache_put(cache_key, payload)
     return payload
 
 
