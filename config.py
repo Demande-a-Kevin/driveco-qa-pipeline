@@ -168,9 +168,9 @@ ANALYSIS_COVERAGE_PCT   = 0.75   # 75% des appels analysables
 ANALYSIS_BATCH_SIZE     = 10     # Appels par batch (metadata-only ou mixte)
 ANALYSIS_BATCH_SIZE_TX  = 5      # Appels par batch quand transcript inclus
 TOP_PROBLEMATIC_CALLS   = 5      # Top appels problématiques isolés dans le rapport
-# Cap dur sur le nombre d'appels QA analysés en daily (None = pas de cap).
-# Permet de tenir le budget runtime du rapport du matin. Le weekly reste sans cap.
-DAILY_MAX_CALLS_ANALYZED = _optional_int_env("DAILY_MAX_CALLS_ANALYZED", 35)
+# Cap optionnel (None par défaut = 75% couverture préservée).
+# À n'activer que pour un incident ponctuel via env DAILY_MAX_CALLS_ANALYZED=<n>.
+DAILY_MAX_CALLS_ANALYZED = _optional_int_env("DAILY_MAX_CALLS_ANALYZED", None)
 # Nombre de batches Ollama traités en parallèle (ThreadPoolExecutor).
 # 1 = comportement séquentiel historique. Gemma4 tolère 2-3 sur Mac mini.
 OLLAMA_ANALYSIS_MAX_WORKERS = max(1, int(os.getenv("OLLAMA_ANALYSIS_MAX_WORKERS", "2")))
