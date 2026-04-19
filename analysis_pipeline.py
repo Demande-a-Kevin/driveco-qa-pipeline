@@ -1335,6 +1335,34 @@ def run_weekly(end_date: datetime):
     start_date = end_date - timedelta(days=6)  # Toujours lundi
     log.info(f"=== ANALYSE HEBDOMADAIRE — {start_date.strftime('%d/%m')} → {end_date.strftime('%d/%m/%Y')} (Lun→Dim) ===")
 
+    # Garde : l'hebdo doit s'exécuter APRÈS la fin du daily du dimanche,
+    # pour capitaliser sur les évaluations déjà persistées.
+    sunday_run = persistence.fetch_llm_run_for_date("daily", end_date)
+    if not sunday_run:
+        log.error(
+            f"  ❌ Aucun run daily trouvé pour le dimanche {end_date.strftime('%Y-%m-%d')}. "
+            f"L'hebdo est abandonné pour éviter un double passage Ollama. "
+            f"Relancer après le daily du dimanche."
+        )
+        return
+    sunday_status = (sunday_run.get("status") or "").lower()
+    if sunday_status not in ("success", "degraded"):
+        log.error(
+            f"  ❌ Daily du dimanche {end_date.strftime('%Y-%m-%d')} en statut '{sunday_status}' "
+            f"(id={sunday_run.get('id')}). Hebdo abandonné — corriger le daily avant de relancer."
+        )
+        return
+    if not sunday_run.get("ended_at"):
+        log.error(
+            f"  ❌ Daily du dimanche {end_date.strftime('%Y-%m-%d')} sans ended_at "
+            f"(id={sunday_run.get('id')}). Run probablement en cours ou interrompu — hebdo abandonné."
+        )
+        return
+    log.info(
+        f"  ✓ Daily dimanche OK (status={sunday_status}, "
+        f"calls={sunday_run.get('calls_count')}, id={sunday_run.get('id')})"
+    )
+
     run_record = _build_run_record("weekly", end_date)
     persistence.save_llm_run(run_record)
     all_calls = []

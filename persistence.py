@@ -766,6 +766,32 @@ def fetch_latest_llm_run() -> dict | None:
     return rows[0] if rows else None
 
 
+def fetch_llm_run_for_date(mode: str, target_date: datetime) -> dict | None:
+    """Return the most recent llm_runs row for `mode` on `target_date` (UTC day), or None.
+
+    Used by the weekly guard to verify that Sunday's daily completed before
+    the Monday weekly kicks off.
+    """
+    supa = client()
+    if supa is None:
+        return None
+    try:
+        prefix = f"{mode}:{target_date.strftime('%Y-%m-%d')}:"
+        response = (
+            supa.table("llm_runs")
+            .select("id,started_at,ended_at,mode,status,calls_count,errors_count")
+            .like("id", f"{prefix}%")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = list(response.data or [])
+        return rows[0] if rows else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"fetch_llm_run_for_date failed: {exc}")
+        return None
+
+
 def fetch_view_rows(view_name: str, columns: str = "*", limit: int | None = None, order: tuple[str, bool] | None = None, **filters) -> list[dict]:
     return _execute_select(view_name, columns=columns, limit=limit, order=order, **filters)
 
