@@ -680,7 +680,8 @@ Réponds UNIQUEMENT avec le JSON (sans call_evaluations) :
 
 def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: list[dict],
                               kb_summary: str, consolidation_model: str,
-                              mode: str = "daily") -> dict:
+                              mode: str = "daily",
+                              reuse_existing_evaluations: bool = False) -> dict:
     """
     Analyse calls_to_analyze via routing Ollama prioritaire :
 
@@ -690,7 +691,32 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
     4. Fallback Anthropic uniquement si explicitement activé
     5. Consolidation finale : consolidation_model,
        désactivable par config pour rester en local-only.
+
+    `reuse_existing_evaluations=True` (weekly) : réutilise les évaluations
+    déjà persistées en Supabase par les dailies pour éviter de re-tourner
+    Ollama sur des appels déjà notés.
     """
+    reused_evaluations: list[dict] = []
+    if reuse_existing_evaluations and calls_to_analyze:
+        call_ids = [
+            persistence.canonical_call_id(c)
+            for c in calls_to_analyze
+        ]
+        existing = persistence.fetch_raw_evaluations_by_call_ids([c for c in call_ids if c])
+        if existing:
+            remaining: list[dict] = []
+            for call in calls_to_analyze:
+                cid = persistence.canonical_call_id(call)
+                if cid and cid in existing:
+                    reused_evaluations.append(existing[cid])
+                else:
+                    remaining.append(call)
+            log.info(
+                f"  [weekly] Réutilisation {len(reused_evaluations)} évaluation(s) déjà persistée(s) — "
+                f"{len(remaining)} appel(s) restant(s) à analyser"
+            )
+            calls_to_analyze = remaining
+
     # ── Étape 1 : Pre-screening ───────────────────────────────────────────────
     log.info(f"  [routing] Pre-screening {len(calls_to_analyze)} appels via Ollama...")
     run_prescreening(calls_to_analyze)
@@ -706,7 +732,9 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
 
     log.info(f"  [routing] Faible={len(low_risk)} Moyen={len(medium_risk)} Élevé={len(high_risk)}")
 
-    all_evaluations: list[dict] = []
+    # Les évaluations réutilisées (weekly) partent en tête pour participer
+    # à la consolidation sans repasser par Ollama.
+    all_evaluations: list[dict] = list(reused_evaluations)
     llm_usage = init_llm_usage_stats()
     batch_stats = {
         "calls_total": 0,
@@ -1361,11 +1389,14 @@ def run_weekly(end_date: datetime):
 
         kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
 
-        # Analyse avec routing Ollama prioritaire, consolidation Sonnet optionnelle pour hebdo
+        # Analyse avec routing Ollama prioritaire, consolidation Sonnet optionnelle pour hebdo.
+        # `reuse_existing_evaluations=True` : les appels déjà notés par les dailies
+        # de la semaine sont réutilisés depuis Supabase — on ne repaie pas Ollama.
         analysis = run_batched_llm_analysis(
             end_date, metrics, calls_to_analyze, kb_summary,
             consolidation_model=llm_client.get_model_reporting(),  # Sonnet
             mode="weekly",
+            reuse_existing_evaluations=True,
         )
 
         transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))

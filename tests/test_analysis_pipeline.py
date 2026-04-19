@@ -75,5 +75,47 @@ class AnalysisPipelineTest(unittest.TestCase):
         self.assertEqual(metrics["pickup_rate_pct"], 70.0)
 
 
+class WeeklyReuseExistingEvaluationsTest(unittest.TestCase):
+    """Le weekly doit réutiliser les évaluations déjà persistées par les
+    dailies pour ne pas repasser par Ollama sur les mêmes appels."""
+
+    def test_reused_evaluations_skip_ollama_and_land_in_consolidation(self):
+        reused = {
+            "abc123": {"call_id": "abc123", "score_global": 7.2, "_model": "gemma4:latest"},
+            "def456": {"call_id": "def456", "score_global": 5.5, "_model": "gemma4:latest"},
+        }
+        calls = [
+            {"call_id": "abc123", "call_id_internal": "abc123", "transcript": "t1"},
+            {"call_id": "def456", "call_id_internal": "def456", "transcript": "t2"},
+            {"call_id": "new999", "call_id_internal": "new999", "transcript": "t3"},
+        ]
+
+        with mock.patch.object(analysis_pipeline.persistence, "fetch_raw_evaluations_by_call_ids", return_value=reused), \
+             mock.patch.object(analysis_pipeline.persistence, "canonical_call_id", side_effect=lambda c: c.get("call_id")), \
+             mock.patch.object(analysis_pipeline, "run_prescreening"), \
+             mock.patch.object(analysis_pipeline.schemas, "reset_clip_stats"), \
+             mock.patch.object(analysis_pipeline.ollama_client, "is_available", return_value=False), \
+             mock.patch.object(analysis_pipeline, "get_top_problematic", return_value=[]), \
+             mock.patch.object(analysis_pipeline.metrics_builder, "build_voc_summary", return_value={}), \
+             mock.patch.object(analysis_pipeline, "build_consolidation_summary", return_value={}), \
+             mock.patch.object(analysis_pipeline, "build_consolidation_prompt", return_value=""), \
+             mock.patch.object(analysis_pipeline.llm_client, "analyze", return_value={}), \
+             mock.patch.object(analysis_pipeline.llm_client, "get_model_standard", return_value="haiku"), \
+             mock.patch.object(analysis_pipeline.llm_client, "get_model_flagged", return_value="sonnet"), \
+             mock.patch.object(analysis_pipeline.config, "ENABLE_ANTHROPIC_CONSOLIDATION", False):
+            result = analysis_pipeline.run_batched_llm_analysis(
+                datetime(2026, 4, 19), {}, calls, "kb-summary",
+                consolidation_model="sonnet", mode="weekly",
+                reuse_existing_evaluations=True,
+            )
+
+        evaluated_ids = {ev.get("call_id") for ev in result.get("call_evaluations", [])}
+        self.assertIn("abc123", evaluated_ids)
+        self.assertIn("def456", evaluated_ids)
+        # `new999` n'a pas d'éval existante ; Ollama étant down dans ce test,
+        # il n'est pas évalué — mais les 2 réutilisés doivent remonter.
+        self.assertGreaterEqual(len(evaluated_ids), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,15 @@ class AnalysisCacheTest(unittest.TestCase):
         k2 = ollama_client._cache_key({"transcript": "B"}, "kb")
         self.assertNotEqual(k1, k2)
 
+    def test_cache_key_is_independent_of_kb_summary(self):
+        """Le kb_excerpt change avec la composition du batch (daily vs weekly).
+        La clé cache doit rester stable pour permettre la réutilisation
+        daily → weekly sans re-analyser."""
+        call = {"transcript": "same transcript"}
+        k1 = ollama_client._cache_key(call, "kb-batch-daily")
+        k2 = ollama_client._cache_key(call, "kb-batch-weekly-different")
+        self.assertEqual(k1, k2)
+
     def test_cache_key_changes_when_version_bumped(self):
         call = {"transcript": "same"}
         k1 = ollama_client._cache_key(call, "kb")

@@ -721,6 +721,42 @@ def fetch_daily_snapshots(scope: str, days: int = 14, agent_id: str = "") -> lis
     )
 
 
+def fetch_raw_evaluations_by_call_ids(call_ids: list[str]) -> dict[str, dict]:
+    """Retourne `{call_id: raw_evaluation}` pour les call_ids déjà évalués.
+    Permet au weekly de réutiliser les évaluations produites par les dailies
+    sans repayer le temps Ollama. Clé = `call_id` Supabase (cf. upsert_call)."""
+    if not call_ids or not is_enabled():
+        return {}
+    client_ = client()
+    if not client_:
+        return {}
+    unique_ids = list({cid for cid in call_ids if cid})
+    if not unique_ids:
+        return {}
+    result: dict[str, dict] = {}
+    # Supabase `in_` filter : chunk prudent pour éviter les URLs trop longues.
+    chunk = 100
+    try:
+        for i in range(0, len(unique_ids), chunk):
+            batch = unique_ids[i:i + chunk]
+            rows = (
+                client_.table("evaluations")
+                .select("call_id,raw")
+                .in_("call_id", batch)
+                .execute()
+                .data
+                or []
+            )
+            for row in rows:
+                raw = row.get("raw")
+                if isinstance(raw, dict) and row.get("call_id"):
+                    result[row["call_id"]] = raw
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[persistence] fetch_raw_evaluations_by_call_ids KO: %s", exc)
+        return {}
+    return result
+
+
 def fetch_recent_anomaly_events(limit: int = 20) -> list[dict]:
     return _execute_select("anomaly_events", columns="*", limit=limit, order=("created_at", True))
 

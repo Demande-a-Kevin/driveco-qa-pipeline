@@ -24,14 +24,17 @@ _SESSION.headers.update({"Content-Type": "application/json"})
 
 
 # ── Cache idempotent des analyses QA ─────────────────────────────────────────
-# Hash (transcript + kb_summary + modèle + version prompt + flag VoC) → payload.
-# Permet qu'un rerun manuel sur la même date ne repaie pas le temps Ollama.
-# Bump LLM_ANALYSIS_CACHE_VERSION dans config.py quand les prompts changent.
+# Hash (transcript + modèle + flag VoC + version prompt) → payload.
+# Volontairement indépendant du kb_summary : le kb_excerpt dépend de la
+# composition du batch (daily vs weekly regroupent différemment les mêmes
+# appels), donc inclure le kb dans la clé ferait systématiquement miss le
+# cache sur le weekly. On accepte que les évaluations cachées reflètent le
+# contexte KB au moment du daily ; bump LLM_ANALYSIS_CACHE_VERSION quand la
+# KB ou les prompts changent significativement pour invalider en douceur.
 
-def _cache_key(call: dict, kb_summary: str) -> str:
+def _cache_key(call: dict, kb_summary: str | None = None) -> str:
     payload = {
         "transcript": call.get("transcript") or "",
-        "kb": kb_summary or "",
         "model": config.OLLAMA_MODEL_ANALYSIS,
         "voc": bool(config.ENABLE_VOC_ANALYSIS),
         "version": getattr(config, "LLM_ANALYSIS_CACHE_VERSION", "v1"),
