@@ -1402,59 +1402,73 @@ def run_weekly(end_date: datetime):
             f"(UCC={len(ucc_calls)} / Driveco={len(driveco_calls)})"
         )
 
-        # 75% de couverture pour l'hebdo, sans plafond dur
-        calls_to_analyze = select_calls_for_analysis(
-            qa_calls,
-            coverage_pct=config.ANALYSIS_COVERAGE_PCT,
-        )
         eligible_qa_count = len([c for c in qa_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
         eligible_ucc_count = len([c for c in ucc_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
         eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
-        calls_to_analyze = call_fetcher.enrich_with_transcripts(
-            calls_to_analyze, max_with_transcript=len(calls_to_analyze)
-        )
-        persistence.persist_transcripts(calls_to_analyze)
 
-        kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
-
-        # Analyse avec routing Ollama prioritaire, consolidation Sonnet optionnelle pour hebdo.
-        # `reuse_existing_evaluations=True` : les appels déjà notés par les dailies
-        # de la semaine sont réutilisés depuis Supabase — on ne repaie pas Ollama.
-        analysis = run_batched_llm_analysis(
-            end_date, metrics, calls_to_analyze, kb_summary,
-            consolidation_model=llm_client.get_model_reporting(),  # Sonnet
-            mode="weekly",
-            reuse_existing_evaluations=True,
+        # Pure aggregation : on agrège les évaluations déjà produites par les 7 dailies.
+        # Aucun select_calls_for_analysis, aucun enrich_with_transcripts, aucun appel Ollama/Anthropic.
+        qa_call_ids = [persistence.canonical_call_id(c) for c in qa_calls]
+        qa_call_ids = [cid for cid in qa_call_ids if cid]
+        existing = persistence.fetch_raw_evaluations_by_call_ids(qa_call_ids)
+        call_evaluations = list(existing.values())
+        calls_to_analyze = [c for c in qa_calls if persistence.canonical_call_id(c) in existing]
+        log.info(
+            f"  [weekly-aggregate] {len(call_evaluations)} évaluation(s) agrégée(s) "
+            f"depuis Supabase sur {len(qa_calls)} appel(s) QA scope"
         )
 
-        transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
-        analyzed_ucc_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc")
-        analyzed_driveco_count = sum(1 for c in calls_to_analyze if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco")
-        analysis["analysis_meta"] = {
-            "eligible_calls": eligible_qa_count,
-            "eligible_ucc_calls": eligible_ucc_count,
-            "eligible_driveco_calls": eligible_driveco_count,
-            "analyzed_calls": len(calls_to_analyze),
-            "analyzed_ucc_calls": analyzed_ucc_count,
-            "analyzed_driveco_calls": analyzed_driveco_count,
-            "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
-            "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
-            "transcript_calls": transcripts_count,
-            "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
-            "llm_usage": analysis.get("llm_usage", {}),
-        }
-        analysis["snapshot_metrics"] = {
-            "fcr_rate_pct": metrics_builder.first_call_resolution_rate(analysis.get("call_evaluations", [])),
-            "kb_compliance_rate_pct": metrics_builder.kb_compliance_rate(analysis.get("call_evaluations", [])),
-            "avg_soft_score": _avg_soft_score(analysis.get("call_evaluations", [])),
-        }
+        top_problematic = get_top_problematic(call_evaluations) or []
+        summary = build_consolidation_summary(metrics, call_evaluations, top_problematic)
+        consolidated = build_fallback_consolidation(metrics, summary)
+        voc_summary = metrics_builder.build_voc_summary(call_evaluations) or {}
+        kb_gaps_clustered = metrics_builder.cluster_kb_gaps(call_evaluations) or []
 
-        persistence.persist_evaluations(calls_to_analyze, analysis.get("call_evaluations", []))
-        shadow_rows = _run_shadow_evaluations(end_date, calls_to_analyze, analysis, kb_summary)
-        if shadow_rows:
-            persistence.save_shadow_runs(shadow_rows)
-            analysis["shadow_runs"] = shadow_rows
-        persistence.purge_expired_verbatims()
+        analyzed_ucc_count = sum(
+            1 for c in calls_to_analyze
+            if call_classifier.get_quality_scope(c.get("classified_type")) == "ucc"
+        )
+        analyzed_driveco_count = sum(
+            1 for c in calls_to_analyze
+            if call_classifier.get_quality_scope(c.get("classified_type")) == "driveco"
+        )
+        transcripts_count = sum(1 for ev in call_evaluations if ev.get("transcript_usable"))
+
+        analysis = {
+            "kpis": consolidated.get("kpis", metrics),
+            "scores": consolidated.get("scores", {}),
+            "call_evaluations": call_evaluations,
+            "top_issues": consolidated.get("top_issues", []),
+            "good_practices": consolidated.get("good_practices", []),
+            "alerts": consolidated.get("alerts", []),
+            "kb_gaps": consolidated.get("kb_gaps", {}),
+            "recommendations": consolidated.get("recommendations", []),
+            "top_problematic_calls": top_problematic,
+            "voc_summary": voc_summary,
+            "kb_gaps_clustered": kb_gaps_clustered,
+            "batch_stats": {},
+            "run_health": {},
+            "llm_usage": {},
+            "analysis_meta": {
+                "eligible_calls": eligible_qa_count,
+                "eligible_ucc_calls": eligible_ucc_count,
+                "eligible_driveco_calls": eligible_driveco_count,
+                "analyzed_calls": len(calls_to_analyze),
+                "analyzed_ucc_calls": analyzed_ucc_count,
+                "analyzed_driveco_calls": analyzed_driveco_count,
+                "target_coverage_pct": round(config.ANALYSIS_COVERAGE_PCT * 100, 1),
+                "actual_coverage_pct": round((len(calls_to_analyze) / max(1, eligible_qa_count) * 100), 1),
+                "transcript_calls": transcripts_count,
+                "transcript_rate_pct": round((transcripts_count / max(1, len(calls_to_analyze)) * 100), 1),
+                "llm_usage": {},
+                "aggregation_mode": "supabase_pure",
+            },
+            "snapshot_metrics": {
+                "fcr_rate_pct": metrics_builder.first_call_resolution_rate(call_evaluations),
+                "kb_compliance_rate_pct": metrics_builder.kb_compliance_rate(call_evaluations),
+                "avg_soft_score": _avg_soft_score(call_evaluations),
+            },
+        }
 
         report_md = report_formatter.format_weekly_report(start_date, end_date, metrics, analysis)
         notifier.save_report(report_md, end_date, mode="weekly")

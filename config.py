@@ -210,6 +210,14 @@ LLM_CACHE_DIR       = _resolve_path_env(
 DISABLE_SLACK_NOTIFICATIONS = os.getenv("DISABLE_SLACK_NOTIFICATIONS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DISABLE_EXTERNAL_PUBLISH = os.getenv("DISABLE_EXTERNAL_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+# ── Obsidian publication ────────────────────────────────────────────────────
+# Dépose les rapports Markdown (daily/weekly) dans un vault Obsidian local
+# pour archivage et consultation hors ligne. Désactivé si le chemin n'existe pas.
+_DEFAULT_OBSIDIAN_VAULT = Path("/Users/kev1n/Documents/Obsidian/Kev1n")
+OBSIDIAN_VAULT_DIR      = _resolve_path_env("OBSIDIAN_VAULT_DIR", _DEFAULT_OBSIDIAN_VAULT)
+OBSIDIAN_REPORTS_SUBDIR = os.getenv("OBSIDIAN_REPORTS_SUBDIR", "Driveco QA").strip() or "Driveco QA"
+DISABLE_OBSIDIAN_PUBLISH = os.getenv("DISABLE_OBSIDIAN_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
+
 # Crée les répertoires si absents
 REPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)

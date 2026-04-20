@@ -865,6 +865,8 @@ def save_report(
     mode: str,
     filename_suffix: str | None = None,
     notion_title_prefix: str | None = None,
+    metrics: dict | None = None,
+    analysis: dict | None = None,
 ) -> Path:
     """
     Sauvegarde le rapport en local + Google Drive + Notion.
@@ -888,4 +890,50 @@ def save_report(
     # Export Notion (silencieux si API key manquante)
     notion_reporter.save_report_to_notion(report_md, date, mode, title_prefix=notion_title_prefix)
 
+    # Export Obsidian (silencieux si vault introuvable ou désactivé)
+    try:
+        obsidian_path = _publish_to_obsidian(report_md, date, mode, filename_suffix)
+        if obsidian_path:
+            print(f"[notifier] 📓 Obsidian → {obsidian_path}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[notifier] ⚠️  Export Obsidian échoué : {exc}")
+
     return path
+
+
+def _publish_to_obsidian(
+    report_md: str,
+    date: datetime,
+    mode: str,
+    filename_suffix: str | None = None,
+) -> Path | None:
+    """Écrit le rapport dans le vault Obsidian sous `<vault>/<subdir>/<Mode>/`.
+
+    Renvoie None si désactivé ou si le vault n'existe pas. Ajoute un frontmatter
+    YAML (date, type, tags) pour faciliter les requêtes et vues Obsidian.
+    """
+    if getattr(config, "DISABLE_OBSIDIAN_PUBLISH", False):
+        return None
+    vault = getattr(config, "OBSIDIAN_VAULT_DIR", None)
+    if not vault or not Path(vault).exists():
+        return None
+
+    mode_label = {"daily": "Daily", "weekly": "Weekly"}.get(mode, mode.capitalize())
+    subdir = getattr(config, "OBSIDIAN_REPORTS_SUBDIR", "Driveco QA") or "Driveco QA"
+    target_dir = Path(vault) / subdir / mode_label
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = f" — {filename_suffix}" if filename_suffix else ""
+    filename = f"{date.strftime('%Y-%m-%d')} — Driveco QA {mode_label}{suffix}.md"
+    target_path = target_dir / filename
+
+    frontmatter = (
+        "---\n"
+        f"date: {date.strftime('%Y-%m-%d')}\n"
+        f"type: qa-report\n"
+        f"mode: {mode}\n"
+        f"tags: [driveco, qa, {mode}]\n"
+        "---\n\n"
+    )
+    target_path.write_text(frontmatter + report_md, encoding="utf-8")
+    return target_path
