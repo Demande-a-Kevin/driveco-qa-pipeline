@@ -257,6 +257,7 @@ def build_actionable_items(analysis: dict) -> list[dict]:
                 "tag": "cx",
                 "description": f"{item.get('metric')} anormal sur {item.get('scope')}",
                 "call_id": None,
+                "representative_call_ids": list(item.get("representative_call_ids") or [])[:3],
                 "priority": "critical",
             }
         )

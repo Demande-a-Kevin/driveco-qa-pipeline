@@ -41,6 +41,8 @@ import call_fetcher
 import call_classifier
 import metrics_builder
 import notion_kb_fetcher
+import notion_kb_sync
+import obsidian_kb_fetcher as _obsidian_kb_fetcher
 import llm_client
 import ollama_client
 import reliability
@@ -61,6 +63,26 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+
+def _kb_source():
+    """Module actif pour la KB QA (Obsidian si OBSIDIAN_KB_ENABLED, sinon Notion)."""
+    return _obsidian_kb_fetcher if config.OBSIDIAN_KB_ENABLED else notion_kb_fetcher
+
+
+def _sync_kb_if_enabled() -> None:
+    """Synchronise Notion → Obsidian en début de run quand Obsidian est la source KB."""
+    if not config.OBSIDIAN_KB_ENABLED:
+        return
+    try:
+        summary = notion_kb_sync.sync(force=False)
+        log.info(
+            f"[kb-sync] Obsidian KB mirror : +{summary['created']} / ~{summary['updated']} "
+            f"/ ={summary['skipped']} / -{summary['deleted']} (total Notion: {summary['total_notion']})"
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[kb-sync] échec non bloquant : {exc}")
+
 
 # Charge le system prompt depuis le fichier texte
 SYSTEM_PROMPT = (Path(__file__).parent / "system_prompt.txt").read_text(encoding="utf-8")
@@ -631,7 +653,7 @@ Réponds UNIQUEMENT avec le JSON, champ "call_evaluations" uniquement :
 
 def get_batch_kb_excerpt(batch_calls: list[dict]) -> str:
     """Construit l'extrait KB pertinent pour un batch d'appels."""
-    excerpt = notion_kb_fetcher.build_relevant_kb_excerpt(
+    excerpt = _kb_source().build_relevant_kb_excerpt(
         batch_calls,
         max_chars=KB_EXCERPT_MAX_CHARS,
         max_pages=KB_EXCERPT_MAX_PAGES,
@@ -1191,6 +1213,7 @@ def _run_shadow_evaluations(target_date: datetime, calls_to_analyze: list[dict],
 
 def run_daily(target_date: datetime):
     log.info(f"=== ANALYSE QUOTIDIENNE — {target_date.strftime('%d/%m/%Y')} ===")
+    _sync_kb_if_enabled()
     run_record = _build_run_record("daily", target_date)
     persistence.save_llm_run(run_record)
     calls = []
@@ -1255,7 +1278,7 @@ def run_daily(target_date: datetime):
         )
         persistence.persist_transcripts(calls_to_analyze)
 
-        kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
+        kb_summary = _kb_source().get_kb_summary_for_prompt()
 
         # Analyse avec routing Ollama prioritaire, consolidation Anthropic optionnelle
         analysis = run_batched_llm_analysis(
@@ -1312,10 +1335,12 @@ def run_daily(target_date: datetime):
                 analysis["run_health"]["selected_calls"],
             )
         else:
+            # Règle : un seul post Slack par run daily. Voix du client, risque
+            # client et anomalies sont désormais intégrés directement dans le
+            # Block Kit principal (voir notifier.build_slack_blocks) pour
+            # éviter les doublons et les divergences de counts.
             notifier.send_slack_notification(analysis, mode="daily", date=target_date,
                                              calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
-            notifier.send_anomaly_alerts(analysis, target_date)
-            notifier.send_voc_alerts(analysis, mode="daily", date=target_date)
             log.info("  ✅ Analyse quotidienne terminée.")
     except Exception:
         _finalize_run_record(run_record, "failed", len(calls_to_analyze), analysis, errors_count=1)
@@ -1334,6 +1359,7 @@ def run_weekly(end_date: datetime):
     end_date = end_date - timedelta(days=days_since_sunday)
     start_date = end_date - timedelta(days=6)  # Toujours lundi
     log.info(f"=== ANALYSE HEBDOMADAIRE — {start_date.strftime('%d/%m')} → {end_date.strftime('%d/%m/%Y')} (Lun→Dim) ===")
+    _sync_kb_if_enabled()
 
     # Garde : l'hebdo doit s'exécuter APRÈS la fin du daily du dimanche,
     # pour capitaliser sur les évaluations déjà persistées.
@@ -1488,11 +1514,11 @@ def run_reliability(target_date: datetime):
     run_record = _build_run_record("reliability", target_date)
     persistence.save_llm_run(run_record)
     try:
-        cached_payload = notion_kb_fetcher._load_cache()  # type: ignore[attr-defined]
+        cached_payload = _kb_source()._load_cache()  # type: ignore[attr-defined]
         if cached_payload:
             kb_summary = cached_payload.get("summary_full") or cached_payload.get("summary_titles") or ""
         else:
-            kb_summary = notion_kb_fetcher.get_kb_summary_for_prompt()
+            kb_summary = _kb_source().get_kb_summary_for_prompt()
         scored_rows = reliability.score_gold_set(mode="ollama", kb_summary=kb_summary)
         metrics = reliability.compute_reliability_metrics(scored_rows)
         run_record["raw"] = {

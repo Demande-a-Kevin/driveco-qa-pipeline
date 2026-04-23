@@ -69,6 +69,54 @@ def _safe_pct(numerator: int, denominator: int) -> float:
     return round(numerator / denominator * 100, 1)
 
 
+# Règle "Answer rate réel" : on exclut du dénominateur les appels qui n'ont
+# jamais eu une chance d'être décrochés par un agent (call deflector, abandon
+# dans l'IVR avant d'atteindre la file, hors horaires d'ouverture, abandons
+# quasi-instantanés < 5s). Référence : champs Aircall `ivr_branch` (key_3 /
+# "deflect" = message pré-enregistré) et `missed_call_reason`.
+_NOT_ANSWERABLE_MISSED_REASONS = {
+    "abandoned_in_ivr",
+    "short_abandoned",
+    "out_of_opening_hours",
+}
+
+
+def _is_call_deflected(call: dict) -> bool:
+    ivr = str(call.get("ivr_branch") or "").lower()
+    return "deflect" in ivr or "key_3" in ivr
+
+
+def _is_call_answerable(call: dict) -> bool:
+    """True si l'appel a pu atteindre la file agent (décrochable)."""
+    if _is_call_deflected(call):
+        return False
+    reason = str(call.get("missed_call_reason") or "").lower()
+    if reason in _NOT_ANSWERABLE_MISSED_REASONS:
+        return False
+    # Appel raccroché en < 5s sans tentative = non décrochable (client ou réseau)
+    if call.get("answered") != "Yes":
+        wait = int(call.get("waiting_time") or 0)
+        if wait and wait < 5 and not reason:
+            return False
+    return True
+
+
+def _line_kpis(line_calls: list[dict]) -> dict:
+    """Retourne les KPIs (Inbounds, Answer rate, Durée moy) d'une ligne donnée."""
+    presented = len(line_calls)
+    answerable = [c for c in line_calls if _is_call_answerable(c)]
+    answered = [c for c in line_calls if c.get("answered") == "Yes"]
+    answered_amongst_answerable = [c for c in answerable if c.get("answered") == "Yes"]
+    durations = [c.get("duration_in_call") or 0 for c in answered if (c.get("duration_in_call") or 0) > 0]
+    return {
+        "presented": presented,
+        "answerable": len(answerable),
+        "answered": len(answered),
+        "answer_rate_pct": _safe_pct(len(answered_amongst_answerable), len(answerable)),
+        "avg_duration_seconds": round(sum(durations) / len(durations)) if durations else 0,
+    }
+
+
 def _compute_long_ucc_calls(calls: list[dict]) -> tuple[int, list[dict]]:
     threshold = max(1, int(config.LONG_CALL_THRESHOLD_SECONDS))
     ucc_types = {"ucc_handled", "warm_transfer"}
@@ -114,6 +162,17 @@ def compute_metrics(calls: list[dict]) -> dict:
     peak_windows = _compute_peak_windows(assistance_line_calls)
     long_ucc_count, long_ucc_top_calls = _compute_long_ucc_calls(calls)
 
+    # KPIs ventilés par ligne Aircall (Assistance vs UCC transfert) — affichés
+    # côte-à-côte dans le Slack daily pour permettre une lecture rapide.
+    assistance_line_kpis = _line_kpis(assistance_line_calls)
+    transfer_line_kpis   = _line_kpis(transfer_line_calls)
+
+    # Answer rate global calculé sur les appels "décrochables" (hors call
+    # deflector / abandons IVR). Cf. _is_call_answerable().
+    answerable = [c for c in calls if _is_call_answerable(c)]
+    answered_amongst_answerable = [c for c in answerable if c.get("answered") == "Yes"]
+    answer_rate_pct = _safe_pct(len(answered_amongst_answerable), len(answerable))
+
     durations    = [c.get("duration_in_call") or 0 for c in answered]
     wait_times   = [c.get("waiting_time") or 0 for c in calls if c.get("waiting_time")]
     avg_dur      = sum(durations) / len(durations) if durations else 0
@@ -143,12 +202,26 @@ def compute_metrics(calls: list[dict]) -> dict:
     if peak_windows:
         top_peak = peak_windows[0]
         if top_peak["count"] >= 5:
+            # Récupère jusqu'à 3 call_ids représentatifs du pic pour permettre
+            # au bloc Alertes Slack d'ajouter des liens cliquables.
+            peak_call_ids = []
+            window_start, window_end = top_peak["start_ts"], top_peak["end_ts"]
+            for call in assistance_line_calls:
+                ts = _parse_call_timestamp(call)
+                if ts is None or not (window_start <= ts < window_end):
+                    continue
+                cid = call.get("call_id_internal") or call.get("call_id")
+                if cid:
+                    peak_call_ids.append(str(cid))
+                if len(peak_call_ids) >= 3:
+                    break
             alerts.append({
                 "level": "warning",
                 "message": (
                     f"Pic détecté : {top_peak['count']} appels entre "
                     f"{top_peak['start_local']} et {top_peak['end_local']} — possible incident terrain"
                 ),
+                "call_ids": peak_call_ids,
             })
 
     thresholds = config.KPI_THRESHOLDS
@@ -173,8 +246,20 @@ def compute_metrics(calls: list[dict]) -> dict:
         "pickup_rate_pct":          pickup_rate,
         "overflow_rate_pct":        overflow_rate,
         "abandon_rate_pct":         abandon_rate,
+        "answerable_calls":         len(answerable),
+        "answer_rate_pct":          answer_rate_pct,
         "avg_duration_seconds":     round(avg_dur),
         "avg_wait_time_seconds":    round(avg_wait),
+        # Ventilation Assistance Driveco
+        "assistance_line_answerable":          assistance_line_kpis["answerable"],
+        "assistance_line_answered":            assistance_line_kpis["answered"],
+        "assistance_line_answer_rate_pct":     assistance_line_kpis["answer_rate_pct"],
+        "assistance_line_avg_duration_seconds": assistance_line_kpis["avg_duration_seconds"],
+        # Ventilation Driveco UCC transfert
+        "transfer_line_answerable":            transfer_line_kpis["answerable"],
+        "transfer_line_answered":              transfer_line_kpis["answered"],
+        "transfer_line_answer_rate_pct":       transfer_line_kpis["answer_rate_pct"],
+        "transfer_line_avg_duration_seconds":  transfer_line_kpis["avg_duration_seconds"],
         "pickup_rate_icon":         _icon(pickup_rate, thresholds["pickup_rate"]),
         "overflow_rate_icon":       _icon(overflow_rate, thresholds["overflow_rate"]),
         "abandon_rate_icon":        _icon(abandon_rate, thresholds["abandon_rate"]),
@@ -488,6 +573,21 @@ def aggregate_voc_entity_sentiment(evaluations: list[dict]) -> list[dict]:
     return output
 
 
+def aggregate_voc_churn_risk_typology(evaluations: list[dict]) -> dict:
+    """Retourne la répartition {élevé: N, modéré: N} des risques client."""
+    buckets = Counter()
+    for evaluation in evaluations or []:
+        voc_extract = evaluation.get("voc_extract") or {}
+        signal = voc_extract.get("churn_risk_signal")
+        if signal in {"modéré", "élevé"}:
+            buckets[signal] += 1
+    return {
+        "eleve": buckets.get("élevé", 0),
+        "modere": buckets.get("modéré", 0),
+        "total": sum(buckets.values()),
+    }
+
+
 def aggregate_voc_churn_risks(evaluations: list[dict]) -> list[dict]:
     output = []
     for evaluation in evaluations or []:
@@ -604,6 +704,7 @@ def build_voc_summary(evaluations: list[dict]) -> dict:
         "top_topics": aggregate_voc_topics(evaluations),
         "entity_sentiment": aggregate_voc_entity_sentiment(evaluations),
         "churn_risk_calls": aggregate_voc_churn_risks(evaluations),
+        "churn_risk_typology": aggregate_voc_churn_risk_typology(evaluations),
         "opportunities": aggregate_voc_opportunities(evaluations),
         "best_practices": aggregate_voc_best_practices(evaluations),
         "positive_satisfaction": aggregate_voc_positive_satisfaction(evaluations),

@@ -414,13 +414,28 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     label     = "Quotidien" if mode == "daily" else "Hebdomadaire"
     date_str  = date.strftime("%d/%m/%Y")
 
-    # KPIs
+    # KPIs globaux — labels harmonisés avec la terminologie Aircall (Inbounds,
+    # Answer rate). "Answer rate" est calculé sur les appels décrochables
+    # (hors call deflector et abandons IVR) — cf. metrics_builder._is_call_answerable.
     total    = kpis.get("calls_presented", 0)
     answered = kpis.get("calls_answered", 0)
     pickup   = kpis.get("pickup_rate_pct", 0)
     overflow = kpis.get("overflow_rate_pct", 0)
     abandon  = kpis.get("abandon_rate_pct", 0)
     avg_dur  = kpis.get("avg_duration_seconds", 0)
+    answerable       = kpis.get("answerable_calls", total)
+    answer_rate      = kpis.get("answer_rate_pct", pickup)
+    # Ventilation par ligne Aircall
+    assist_inbounds  = kpis.get("assistance_line_calls_presented", 0)
+    assist_answerable = kpis.get("assistance_line_answerable", 0)
+    assist_answered  = kpis.get("assistance_line_answered", 0)
+    assist_rate      = kpis.get("assistance_line_answer_rate_pct", 0)
+    assist_avg_dur   = kpis.get("assistance_line_avg_duration_seconds", 0)
+    transfer_inbounds    = kpis.get("transfer_line_calls_presented", 0)
+    transfer_answerable  = kpis.get("transfer_line_answerable", 0)
+    transfer_answered_kpi = kpis.get("transfer_line_answered", 0)
+    transfer_rate        = kpis.get("transfer_line_answer_rate_pct", 0)
+    transfer_avg_dur     = kpis.get("transfer_line_avg_duration_seconds", 0)
     escalations = kpis.get("escalations_count", 0)
     warm_transfers = kpis.get("warm_transfer_count", 0)
     analyzed_calls = meta.get("analyzed_calls")
@@ -460,32 +475,48 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                 {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon(drv_score)}\n`{_score_text(drv_score)}`"},
             ],
         },
+        # ── KPIs globaux (tous périmètres confondus) ────────────────────────
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*Appels présentés*\n{total}"},
-                {"type": "mrkdwn", "text": f"*Décrochés*\n{answered} ({pickup}%)"},
-                {"type": "mrkdwn", "text": f"{_kpi_icon(overflow, 'overflow_rate')} *Overflow Aircall*\n{overflow}%"},
-                {"type": "mrkdwn", "text": f"{_kpi_icon(abandon, 'abandon_rate')} *Abandon*\n{abandon}%"},
+                {"type": "mrkdwn", "text": f"*Inbounds*\n{total}"},
+                {"type": "mrkdwn", "text": f"{_kpi_icon(answer_rate, 'pickup_rate')} *Answer rate*\n{answer_rate}% ({answered}/{answerable} décrochables)"},
                 {"type": "mrkdwn", "text": f"*Durée moyenne*\n{_format_duration(avg_dur)}"},
+                {"type": "mrkdwn", "text": f"{_kpi_icon(abandon, 'abandon_rate')} *Abandon*\n{abandon}%"},
                 {"type": "mrkdwn", "text": f"*Escalades détectées*\n{escalations} (tags UCC : {warm_transfers})"},
             ],
         },
-        *([] if mode == "daily" else [
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Ligne assistance 785174*\n{assistance_presented} appel(s) entrants"},
-                    {"type": "mrkdwn", "text": f"*Transférés à UCC via IVR charging assistance*\n{assistance_charging_count} appel(s) — {assistance_charging_pct}%"},
-                    {"type": "mrkdwn", "text": f"*Ligne UCC transfert 1214611*\n{transfer_presented} appel(s) entrants"},
-                    {"type": "mrkdwn", "text": f"*Taux décroché ligne 1214611*\n{transfer_pickup_pct}%"},
-                    {"type": "mrkdwn", "text": f"*Éligibles QA*\n{eligible_calls if eligible_calls is not None else 'n/a'} appel(s) (UCC {eligible_ucc_calls if eligible_ucc_calls is not None else 'n/a'} / Driveco {eligible_driveco_calls if eligible_driveco_calls is not None else 'n/a'})"},
-                    {"type": "mrkdwn", "text": f"*Analysés / couverture*\n{analyzed_calls if analyzed_calls is not None else 'n/a'} appel(s) — {actual_coverage if actual_coverage is not None else 'n/a'}% / cible {target_coverage if target_coverage is not None else 'n/a'}% (UCC {analyzed_ucc_calls if analyzed_ucc_calls is not None else 'n/a'} / Driveco {analyzed_driveco_calls if analyzed_driveco_calls is not None else 'n/a'})"},
-                    {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
-                ],
-            },
-            {"type": "divider"},
-        ]),
+        # ── Ligne Assistance Driveco ────────────────────────────────────────
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*📞 Ligne Assistance Driveco*"},
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Inbounds*\n{assist_inbounds}"},
+                {"type": "mrkdwn", "text": f"*Answer rate*\n{assist_rate}% ({assist_answered}/{assist_answerable})"},
+                {"type": "mrkdwn", "text": f"*Durée moyenne*\n{_format_duration(assist_avg_dur)}"},
+                {"type": "mrkdwn", "text": f"*Transférés vers UCC (IVR charging)*\n{assistance_charging_count} — {assistance_charging_pct}%"},
+            ],
+        },
+        # ── Ligne Driveco UCC transfert ─────────────────────────────────────
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*🔁 Ligne Driveco UCC transfert*"},
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Inbounds*\n{transfer_inbounds}"},
+                {"type": "mrkdwn", "text": f"*Answer rate*\n{transfer_rate}% ({transfer_answered_kpi}/{transfer_answerable})"},
+                {"type": "mrkdwn", "text": f"*Durée moyenne*\n{_format_duration(transfer_avg_dur)}"},
+            ],
+        },
+        # ── Appels éligibles QA / analysés / couverture transcripts ─────────
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Éligibles QA*\n{eligible_calls if eligible_calls is not None else 'n/a'} appel(s) (UCC {eligible_ucc_calls if eligible_ucc_calls is not None else 'n/a'} / Driveco {eligible_driveco_calls if eligible_driveco_calls is not None else 'n/a'})"},
+                {"type": "mrkdwn", "text": f"*Analysés / couverture*\n{analyzed_calls if analyzed_calls is not None else 'n/a'} appel(s) — {actual_coverage if actual_coverage is not None else 'n/a'}% / cible {target_coverage if target_coverage is not None else 'n/a'}% (UCC {analyzed_ucc_calls if analyzed_ucc_calls is not None else 'n/a'} / Driveco {analyzed_driveco_calls if analyzed_driveco_calls is not None else 'n/a'})"},
+                {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
+            ],
+        },
+        {"type": "divider"},
     ]
 
     # ── Routage IVR ─────────────────────────────────────────────────────────
@@ -529,24 +560,35 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
 
     voc_summary = analysis.get("voc_summary") or {}
     top_topics = voc_summary.get("top_topics") or []
-    weak_signals = voc_summary.get("weak_signals") or []
     opportunities = voc_summary.get("opportunities") or []
     best_practices = voc_summary.get("best_practices") or []
-    positive_satisfaction = voc_summary.get("positive_satisfaction") or {}
     competitors = voc_summary.get("competitors") or []
+    churn_typology = voc_summary.get("churn_risk_typology") or {}
+    # Bloc unifié : une seule source (top_topics) pour garantir des counts
+    # cohérents. On ne rend plus la ligne "signaux faibles" brute (qui
+    # dupliquait l'info avec des labels non-traduits).
     if top_topics:
         topic_lines = [
-            f"• *{item.get('label', item.get('topic_code'))}* — {item.get('count', 0)} mention(s)"
-            for item in top_topics[:4]
+            f"• *{item.get('label') or item.get('topic_code')}* — {item.get('count', 0)} mention(s)"
+            for item in top_topics[:6]
         ]
-        if weak_signals:
-            weak_signal_line = ", ".join(
-                f"{item.get('topic_code')} ({item.get('count', 0)})" for item in weak_signals[:3]
-            )
-            topic_lines.append(f"_Signaux faibles: {weak_signal_line}_")
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "*Voix du client :*\n" + "\n".join(topic_lines)},
+            "text": {"type": "mrkdwn", "text": "*🗣️ Voix du client :*\n" + "\n".join(topic_lines)},
+        })
+        blocks.append({"type": "divider"})
+
+    # ── Risque client (typologie plutôt que numéros + verbatims) ────────────
+    if churn_typology.get("total"):
+        parts = []
+        if churn_typology.get("eleve"):
+            parts.append(f"*élevé* : {churn_typology['eleve']} appel(s)")
+        if churn_typology.get("modere"):
+            parts.append(f"*modéré* : {churn_typology['modere']} appel(s)")
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                     "text": "*⚠️ Risque client détecté :*\n" + " · ".join(parts)},
         })
         blocks.append({"type": "divider"})
 
@@ -568,14 +610,6 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         })
         blocks.append({"type": "divider"})
 
-    if positive_satisfaction.get("count"):
-        sample = positive_satisfaction.get("sample_quote") or "verbatim indisponible"
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*🌱 Satisfaction positive :* {positive_satisfaction.get('count', 0)} appel(s)\n• « {sample} »"},
-        })
-        blocks.append({"type": "divider"})
-
     if competitors:
         blocks.append({
             "type": "section",
@@ -586,7 +620,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         blocks.append({"type": "divider"})
 
     # ── Clients frustrés (appels répétés) ────────────────────────────────────
-    if mode != "daily" and assistance_scope_calls:
+    if assistance_scope_calls:
         repeat_stats = _repeat_call_resolution_stats(assistance_scope_calls)
         repeat = repeat_stats["entries"]
         if repeat:
@@ -606,7 +640,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             })
 
     # ── Pics d'appels ───────────────────────────────────────────────────────
-    if mode != "daily" and peak_windows:
+    if peak_windows:
         peak_lines = [
             f"• *{window.get('label', '?')}* — {window.get('count', 0)} appel(s)"
             for window in peak_windows[:3]
@@ -618,7 +652,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         blocks.append({"type": "divider"})
 
     # ── Appels longs UCC (≥ 15 min) ─────────────────────────────────────────
-    if mode != "daily" and ucc_calls:
+    if ucc_calls:
         threshold = config.LONG_CALL_THRESHOLD_SECONDS
         long_pool = [
             c for c in ucc_calls
@@ -692,10 +726,23 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     critical = [a for a in alerts if a.get("level") == "critical"]
     warnings = [a for a in alerts if a.get("level") == "warning"]
     if critical or warnings or alert_items:
-        alert_lines = [f"🔴 {item.get('description')}" for item in alert_items[:5]] + (
-            [f"🔴 {a.get('message')}" for a in critical] +
-            [f"🟡 {a.get('message')}" for a in warnings]
-        )
+        def _alert_with_links(prefix: str, message: str, call_ids: list) -> str:
+            links = " ".join(_aircall_link(cid) for cid in (call_ids or []) if cid)
+            suffix = f" — appels : {links}" if links else ""
+            return f"{prefix} {message}{suffix}"
+
+        alert_lines = [
+            _alert_with_links("🔴", item.get("description") or "", item.get("representative_call_ids") or [])
+            for item in alert_items[:5]
+        ]
+        alert_lines += [
+            _alert_with_links("🔴", a.get("message") or "", a.get("call_ids") or [])
+            for a in critical
+        ]
+        alert_lines += [
+            _alert_with_links("🟡", a.get("message") or "", a.get("call_ids") or [])
+            for a in warnings
+        ]
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": f"*Alertes :*\n" + "\n".join(alert_lines)},

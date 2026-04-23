@@ -217,6 +217,10 @@ _DEFAULT_OBSIDIAN_VAULT = Path("/Users/kev1n/Documents/Obsidian/Kev1n")
 OBSIDIAN_VAULT_DIR      = _resolve_path_env("OBSIDIAN_VAULT_DIR", _DEFAULT_OBSIDIAN_VAULT)
 OBSIDIAN_REPORTS_SUBDIR = os.getenv("OBSIDIAN_REPORTS_SUBDIR", "Driveco QA").strip() or "Driveco QA"
 DISABLE_OBSIDIAN_PUBLISH = os.getenv("DISABLE_OBSIDIAN_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
+# KB Obsidian : source de la KB consommée par la pipeline QA (mirror de la page Notion configurée).
+OBSIDIAN_KB_SUBDIR      = os.getenv("OBSIDIAN_KB_SUBDIR", "Driveco QA/KB").strip() or "Driveco QA/KB"
+# Si true : la pipeline lit la KB depuis Obsidian au lieu de Notion.
+OBSIDIAN_KB_ENABLED     = os.getenv("OBSIDIAN_KB_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # Crée les répertoires si absents
 REPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
