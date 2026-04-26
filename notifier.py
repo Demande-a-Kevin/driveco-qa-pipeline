@@ -482,7 +482,9 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                 {"type": "mrkdwn", "text": f"*Inbounds*\n{total}"},
                 {"type": "mrkdwn", "text": f"{_kpi_icon(answer_rate, 'pickup_rate')} *Answer rate*\n{answer_rate}% ({answered}/{answerable} décrochables)"},
                 {"type": "mrkdwn", "text": f"*Durée moyenne*\n{_format_duration(avg_dur)}"},
-                {"type": "mrkdwn", "text": f"{_kpi_icon(abandon, 'abandon_rate')} *Abandon*\n{abandon}%"},
+                # Abandon = total non-décrochés / total inbounds (inclut deflector
+                # et abandons IVR — base différente de l'Answer rate).
+                {"type": "mrkdwn", "text": f"{_kpi_icon(abandon, 'abandon_rate')} *Abandon (sur total inbounds)*\n{abandon}% — {total - answered}/{total}"},
                 {"type": "mrkdwn", "text": f"*Escalades détectées*\n{escalations} (tags UCC : {warm_transfers})"},
             ],
         },
@@ -521,7 +523,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
 
     # ── Routage IVR ─────────────────────────────────────────────────────────
     ivr_scope_calls = [c for c in assistance_scope_calls if not _is_maintenance_call(c)]
-    if mode != "daily" and ivr_scope_calls:
+    if ivr_scope_calls:
         ivr_counts = Counter(
             c.get("ivr_branch")
             for c in ivr_scope_calls
@@ -685,7 +687,7 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     top_prob = analysis.get("top_problematic_calls", [])
     if top_prob:
         lines_prob = []
-        limit = 2 if mode == "daily" else 5
+        limit = 3 if mode == "daily" else 5
         for ev in top_prob[:limit]:
             cid       = ev.get("call_id_internal") or ev.get("call_id", "?")
             score_txt = ""

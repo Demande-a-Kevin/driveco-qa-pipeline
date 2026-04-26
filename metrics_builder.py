@@ -183,13 +183,20 @@ def compute_metrics(calls: list[dict]) -> dict:
     abandon_rate  = round(len(abandoned) / total * 100, 1)
 
     # Détection signaux d'alerte automatiques
+    # NB : on calcule les "appels répétés" sur le scope ligne assistance
+    # uniquement pour rester cohérent avec le bloc "Clients frustrés" du Slack
+    # (qui est rendu sur ce même périmètre). Sans ça, on voit deux comptages
+    # différents dans le même message ("5 numéros" vs "2 numéros").
     alerts = []
-    caller_counts = Counter(c.get("from_number") or c.get("customer_number") for c in calls)
-    repeat_callers = [num for num, cnt in caller_counts.items() if cnt >= 2 and num]
+    repeat_caller_counts = Counter(
+        c.get("from_number") or c.get("customer_number")
+        for c in assistance_line_calls
+    )
+    repeat_callers = [num for num, cnt in repeat_caller_counts.items() if cnt >= 2 and num]
     if repeat_callers:
         alerts.append({
             "level": "warning",
-            "message": f"{len(repeat_callers)} numéro(s) ont appelé 2+ fois — probable non-résolution",
+            "message": f"{len(repeat_callers)} numéro(s) ont appelé 2+ fois sur la ligne Assistance — probable non-résolution",
             "numbers_count": len(repeat_callers),
         })
 
