@@ -1,243 +1,199 @@
 # driveco-qa-pipeline
 
-Pipeline Python d'analyse qualité d'appels Driveco.
+Pipeline Python d'analyse qualité des appels Driveco. Tourne en autonomie sur un Mac mini sous macOS (`launchd`).
 
-Le pipeline :
-- récupère les appels via un worker Cloudflare / D1
-- classe les appels UCC
-- enrichit un échantillon avec transcripts Aircall
-- analyse via Ollama local puis Anthropic
-- génère un rapport Markdown
-- publie vers Slack, Notion et Google Drive si configurés
+**Ce qu'il fait :**
+- Récupère les appels depuis un worker Cloudflare (Aircall / D1)
+- Classe les appels UCC et Driveco Care
+- Analyse la qualité agent via Ollama local (Gemma 4)
+- Extrait la voix du client (VoC) séparément
+- Publie un rapport : **un seul post Slack** + Markdown local + Notion + Obsidian
 
 ## Documentation
 
-Pour comprendre rapidement le projet :
-- [ARCHITECTURE.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/ARCHITECTURE.md) : vue d'ensemble, flux, rôles des fichiers, runtime vs repo source
-- [RUNBOOK.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/RUNBOOK.md) : exploitation quotidienne, logs, checks, incidents fréquents
-
-## Fichiers IA
-
-Pour rendre le repo plus lisible par un assistant IA :
-- [CLAUDE.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/CLAUDE.md) : contexte rapide, règles d'intervention, points sensibles du projet
-- [llms.txt](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/llms.txt) : index minimal pour orientation automatique
-
-## Structure
-
-- `analysis_pipeline.py` : orchestrateur principal
-- `config.py` : chargement du `.env` et constantes
-- `call_fetcher.py` / `d1_client.py` : récupération des appels
-- `llm_client.py` / `ollama_client.py` : appels LLM
-- `notifier.py` / `notion_reporter.py` / `gdrive_uploader.py` : sorties
-- `setup.sh` : installation initiale
-- `setup_cron.sh` : configuration cron
-- `setup_launchd.sh` : configuration `launchd` macOS
+| Doc | Contenu |
+|-----|---------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Flux de données, modules, conventions métier, runtime vs repo |
+| [RUNBOOK.md](RUNBOOK.md) | Exploitation, logs, checks matinaux, incidents fréquents |
+| [CLAUDE.md](CLAUDE.md) | Instructions pour agents IA — règles, variables clés, pièges |
 
 ## Prérequis
 
-- macOS ou Linux
+- macOS (launchd) ou Linux (cron)
 - Python 3.11+
-- accès aux APIs Aircall, Anthropic, Notion, Slack
-- accès au worker Cloudflare utilisé par le pipeline
-- Ollama local facultatif
+- [Ollama](https://ollama.com) avec `gemma4:latest` chargé
+- Accès au worker Cloudflare `driveco-aircall-worker`
+- Comptes Aircall, Slack, Notion (Google Drive optionnel)
 
 ## Installation
 
 ```bash
-cd /chemin/vers/driveco-qa-pipeline
+cd "/chemin/vers/driveco-qa-pipeline"
 bash setup.sh
 ```
 
-Le script :
-- crée `.venv`
-- installe `requirements.txt`
-- copie `.env.example` vers `.env` si absent
-- prépare `qa-driveco-data/`
-- lance un test de connectivité
-- ajoute les crons
+Le script crée `.venv`, installe les dépendances, copie `.env.example` → `.env`, et prépare `qa-driveco-data/`.
 
 ## Configuration `.env`
 
-Crée le fichier :
-
 ```bash
 cp .env.example .env
+# Remplir les variables ci-dessous
 ```
 
-Variables indispensables pour un run complet :
-- `CF_WORKER_URL`
-- `CF_WORKER_AUTH`
-- `AIRCALL_API_ID`
-- `AIRCALL_API_TOKEN`
-- `ANTHROPIC_API_KEY`
-- `NOTION_API_KEY`
-- `NOTION_KB_PAGE_ID`
-- `NOTION_REPORTS_PAGE_ID`
-- `SLACK_BOT_TOKEN`
-- `SLACK_CHANNEL_ID`
+**Variables indispensables :**
 
-Variables optionnelles :
-- `GDRIVE_*`
-- `OLLAMA_*`
-- `REPORT_OUTPUT_DIR`
-- `LOG_DIR`
-- `NOTION_CACHE_PATH`
+```env
+# Worker Cloudflare (source appels)
+CF_WORKER_URL=
+CF_WORKER_AUTH=
 
-Note :
-- `CF_ACCOUNT_ID` et `CF_D1_DATABASE_ID` sont documentés mais non utilisés par le code Python actuel.
-- `CF_API_TOKEN` est conservé pour compatibilité documentaire. Le flux Python s'appuie aujourd'hui sur `CF_WORKER_AUTH`.
+# Aircall (transcripts)
+AIRCALL_API_ID=
+AIRCALL_API_TOKEN=
+
+# Ollama local
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_FIXED_MODEL=gemma4:latest
+
+# Supabase (analytique, optionnel)
+SUPABASE_URL=
+SUPABASE_SERVICE_KEY=
+
+# Notion
+NOTION_API_KEY=
+NOTION_KB_PAGE_ID=
+NOTION_REPORTS_PAGE_ID=
+
+# Base de connaissances Obsidian (prioritaire si ENABLED=true)
+OBSIDIAN_VAULT_DIR=/chemin/vers/vault
+OBSIDIAN_KB_SUBDIR=Driveco QA/KB
+OBSIDIAN_KB_ENABLED=true
+
+# Slack
+SLACK_BOT_TOKEN=
+SLACK_CHANNEL_ID=
+
+# Google Drive (optionnel)
+GDRIVE_CREDENTIALS_FILE=
+GDRIVE_TOKEN_FILE=
+GDRIVE_FOLDER_ID=
+```
+
+> Note : `CF_ACCOUNT_ID`, `CF_D1_DATABASE_ID` et `CF_API_TOKEN` sont documentés dans `.env.example` mais non utilisés par le code Python — le flux passe par `CF_WORKER_AUTH`.
 
 ## Commandes utiles
 
-Test de connectivité :
-
 ```bash
+# Test de connectivité
 .venv/bin/python analysis_pipeline.py --mode test
+
+# Run quotidien manuel (depuis le runtime)
+cd "$HOME/Library/Application Support/driveco-qa-pipeline/runtime"
+.venv/bin/python analysis_pipeline.py --mode daily --date 2026-04-27
+
+# Run hebdomadaire manuel
+.venv/bin/python analysis_pipeline.py --mode weekly --date 2026-04-27
+
+# Tests unitaires
+.venv/bin/python -m pytest -x --tb=short   # doit passer 41 tests
 ```
 
-Run quotidien manuel :
+## Planification macOS (launchd)
 
-```bash
-.venv/bin/python analysis_pipeline.py --mode daily --date 2026-03-31
-```
-
-Run hebdomadaire manuel :
-
-```bash
-.venv/bin/python analysis_pipeline.py --mode weekly --date 2026-03-31
-```
-
-Script de test rapide :
-
-```bash
-bash run_daily_test.sh
-```
-
-## Planification macOS
-
-Sur macOS, utiliser `launchd` de préférence.
-Le `cron` système peut être bloqué par les protections macOS quand le projet vit dans `Documents`.
-`launchd` peut aussi être bloqué si le code exécuté reste directement dans `Documents`.
-Le script `setup_launchd.sh` crée donc maintenant un runtime autonome dans `~/Library/Application Support/driveco-qa-pipeline/runtime`.
-
-Installation recommandée :
+Sur macOS, `launchd` est la méthode recommandée.  
+macOS bloque l'accès disque si le code s'exécute directement depuis `Documents` ou `Desktop`.  
+`setup_launchd.sh` crée un **runtime autonome** dans `~/Library/Application Support/` pour contourner cette restriction.
 
 ```bash
 bash setup_launchd.sh
 ```
 
-À chaque changement de code ou de `.env`, resynchroniser le runtime :
+**Horaires par défaut :**
+
+| Job | Déclenchement |
+|-----|---------------|
+| Benchmark Ollama | Tous les jours à 01:30 |
+| Run daily | Tous les jours à **02:30** |
+| Watchdog daily | Tous les jours à 06:45 |
+| Reliability | Lundi à 04:00 |
+| Run weekly | Lundi à **07:15** |
+
+**Après chaque modification de code ou de `.env`** :
 
 ```bash
+cd "/Users/kev1n/Desktop/Kev1n IA/Codex/driveco-qa-pipeline"
 bash sync_launchd_runtime.sh
+bash setup_launchd.sh
 ```
 
-Par défaut avec `launchd` :
-- tous les jours à `01:30` : benchmark Ollama sur vrais transcripts
-- tous les jours à `05:15` : run `daily`
-- tous les jours à `06:45` : watchdog `daily`
-- chaque lundi à `07:15` : run `weekly`
-
-Garde-fous ajoutés :
-- couverture QA à `75%` des appels analysables, sans plafond dur
-- fichier d'état de run dans `qa-driveco-data/state/`
-- alerte Slack si le run quotidien échoue
-- alerte Slack si le run est encore en cours à l'heure du watchdog
-- relance automatique si le run est bloqué ou s'est arrêté avant publication
-
-Horaires surchargables :
-- `BENCH_HOUR`
-- `BENCH_MINUTE`
-- `DAILY_HOUR`
-- `DAILY_MINUTE`
-- `WATCHDOG_HOUR`
-- `WATCHDOG_MINUTE`
-- `WEEKLY_HOUR`
-- `WEEKLY_MINUTE`
-- `LAUNCHD_RUNTIME_DIR`
-- `OLLAMA_FIXED_MODEL`
-- `OLLAMA_NUM_CTX`
-
-Exemple :
+**Vérifier que les 5 jobs sont chargés :**
 
 ```bash
-BENCH_HOUR=1 BENCH_MINUTE=30 DAILY_HOUR=6 DAILY_MINUTE=40 bash setup_launchd.sh
+launchctl list | grep driveco
+# Doit afficher 5 lignes : daily, daily-watchdog, weekly, reliability, benchmark
 ```
 
-## Cron installé
+> **Piège** : après un reboot, `com.kev1n.driveco.qa.weekly` peut ne pas être rechargé automatiquement.  
+> Si absent : `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kev1n.driveco.qa.weekly.plist`
 
-Conservé pour compatibilité, mais non recommandé sur macOS quand le repo est dans `Documents`.
-
-Par défaut :
-- tous les jours à `01:30` : benchmark Ollama sur vrais transcripts
-- tous les jours à `05:15` : démarrage du run `daily` pour absorber les runs Gemma 4 plus longs
-- tous les jours à `06:45` : watchdog `daily` si aucun rapport n'a été produit
-- chaque lundi à `07:15` : run `weekly`
-
-Horaires surchargables à l'installation :
-- `BENCH_CRON_HOUR`
-- `BENCH_CRON_MINUTE`
-- `DAILY_CRON_HOUR`
-- `DAILY_CRON_MINUTE`
-- `WATCHDOG_CRON_HOUR`
-- `WATCHDOG_CRON_MINUTE`
-- `WEEKLY_CRON_HOUR`
-- `WEEKLY_CRON_MINUTE`
-
-Exemple :
+**Surcharger les horaires :**
 
 ```bash
-BENCH_CRON_HOUR=1 BENCH_CRON_MINUTE=30 DAILY_CRON_HOUR=6 DAILY_CRON_MINUTE=40 bash setup_cron.sh
+DAILY_HOUR=4 DAILY_MINUTE=0 WEEKLY_HOUR=8 WEEKLY_MINUTE=0 bash setup_launchd.sh
 ```
 
-Logs :
-- `qa-driveco-data/logs/cron_benchmark.log`
-- `qa-driveco-data/logs/cron_daily.log`
-- `qa-driveco-data/logs/cron_weekly.log`
-- `qa-driveco-data/logs/pipeline.log`
+Variables disponibles : `BENCH_HOUR`, `BENCH_MINUTE`, `DAILY_HOUR`, `DAILY_MINUTE`, `WATCHDOG_HOUR`, `WATCHDOG_MINUTE`, `WEEKLY_HOUR`, `WEEKLY_MINUTE`.
 
-Avec `launchd`, les logs réellement utilisés sont dans le runtime :
-- `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily.log`
-- `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily_watchdog.log`
-- `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_daily.log`
+## Logs
 
-Résultat benchmark au réveil :
-- `qa-driveco-data/bench_ollama_latest_summary.md` : résumé lisible le plus récent
-- `qa-driveco-data/bench_ollama_models_...json` : résultat brut complet
-- si Google Drive est configuré, le résumé benchmark est aussi uploadé dans le sous-dossier `Benchmarks Ollama`
+```
+# Logs du runtime launchd (source de vérité)
+~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_daily.log
+~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/cron_weekly.log
+~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/pipeline.log
+~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/launchd_daily.log
+```
 
-## Dépannage
+## Dépannage rapide
 
-Si `--mode test` échoue :
-- vérifie `.env`
-- vérifie que `.venv` existe et que les deps sont installées
-- vérifie que le worker Cloudflare répond
-- vérifie que les pages Notion sont bien partagées avec l'intégration
-- vérifie que le bot Slack a accès au channel
+| Symptôme | Cause probable | Fix |
+|----------|---------------|-----|
+| Rien sur Slack | Run non déclenché | Vérifier `launchctl list \| grep driveco` + logs |
+| Code changé mais run sur ancienne version | Runtime non resynchronisé | `bash sync_launchd_runtime.sh && bash setup_launchd.sh` |
+| Notion : erreur 404 | Intégration "Kev1n Claude" déconnectée | Notion → page → `•••` → Connexions → reconnecter |
+| Weekly non lancé lundi | Job weekly non chargé | `launchctl bootstrap gui/$(id -u) .../weekly.plist` |
+| Ollama échoue | Modèle absent ou trop lent | Vérifier `ollama list`, `ollama pull gemma4:latest` |
 
-Si Ollama ne répond pas :
-- le pipeline doit continuer avec fallback
-- vérifie `OLLAMA_BASE_URL`
-- vérifie que le modèle indiqué est bien chargé
+## Structure du repo
 
-Si Google Drive ne marche pas :
-- vérifie les fichiers OAuth pointés par `GDRIVE_CREDENTIALS_FILE` et `GDRIVE_TOKEN_FILE`
+```
+analysis_pipeline.py    # Orchestrateur (modes: daily/weekly/reliability/test)
+call_fetcher.py         # Récupération et enrichissement appels
+call_classifier.py      # Classification métier (UCC / Driveco)
+metrics_builder.py      # KPIs téléphoniques (answer rate, pics, churn…)
+ollama_client.py        # Client Ollama (passe QA + VoC)
+llm_client.py           # Client Anthropic (intégré, non opérationnel)
+persistence.py          # Écriture Supabase (additif)
+report_formatter.py     # Rendu Markdown + actionable_items dédupliqués
+notifier.py             # Publication Slack (Block Kit, 1 post/run)
+notion_reporter.py      # Publication Notion
+gdrive_uploader.py      # Upload Google Drive (optionnel)
+health_server.py        # Endpoint /health local
+reliability.py          # Gold set scoring
+voc_taxonomy.yaml       # Taxonomie VoC versionnée
+system_prompt.txt       # Prompt QA agent
+prompts/voc_system.txt  # Prompt VoC client (séparé)
+config.py               # Chargement .env + constantes
+setup_launchd.sh        # Installation runtime + plists launchd
+sync_launchd_runtime.sh # Sync repo source → runtime launchd
+run_from_cron.sh        # Wrapper de lancement (lock, log, état)
+db/migrations/          # Migrations SQL Supabase
+tests/                  # Tests unitaires (pytest)
+```
 
 ## Sécurité
 
-- ne jamais committer `.env`, tokens OAuth ou exports QA
-- après exposition d'un `.env` à un agent ou à un tiers, considère les secrets comme compromis et régénère-les
-- les IDs internes Notion / Slack / Cloudflare ne sont pas des secrets critiques, mais on évite de les hardcoder
-
-## Codex / VS Code
-
-Pour travailler proprement :
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pre-commit install
-```
-
-Extensions VS Code recommandées : voir `.vscode/extensions.json`.
+- Ne jamais committer `.env`, tokens OAuth ou exports QA
+- Après exposition d'un `.env` à un tiers, régénérer tous les secrets
+- Les IDs Notion / Slack / Cloudflare ne sont pas critiques mais éviter de les hardcoder

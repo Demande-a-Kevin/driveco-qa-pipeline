@@ -2,190 +2,220 @@
 
 ## Objectif
 
-`driveco-qa-pipeline` est une pipeline locale de QA d'appels Driveco.
+`driveco-qa-pipeline` est un pipeline local d'analyse qualité des appels Driveco.  
+Il tourne en autonomie sur un Mac mini sous macOS (`launchd`).
 
-Elle sert à :
-- récupérer les appels depuis un worker Cloudflare connecté à Aircall / D1
-- normaliser et classifier les appels
-- récupérer les transcripts Aircall AI pour un sous-ensemble d'appels
-- analyser la qualité des appels avec Ollama local
-- extraire séparément la voix du client à partir des mêmes transcripts
-- produire un rapport Markdown, Slack et Notion
+Ce qu'il fait :
+- Récupère les appels depuis un worker Cloudflare connecté à Aircall / D1
+- Normalise et classe les appels en deux scopes métier (UCC / Driveco)
+- Récupère les transcripts Aircall AI pour un échantillon (~75 %)
+- Analyse la qualité agent avec Ollama local (Gemma 4)
+- Extrait séparément la voix du client (VoC)
+- Calcule des KPIs téléphoniques (inbounds, answer rate, pics, churn…)
+- Publie un rapport unique : Slack + Markdown + Notion + Obsidian
 
-## Vue d'ensemble
+---
 
-```text
-Aircall
-  -> Worker Cloudflare
-  -> D1 / endpoints export
-  -> call_fetcher.py / d1_client.py
-  -> classification + métriques
-  -> enrichissement transcripts Aircall AI
-  -> analysis_pipeline.py
-  -> Ollama local (Gemma 4)
-  -> passe VoC dédiée
-  -> persistence.py
-  -> Supabase (Postgres analytique, additif)
-  -> consolidation fallback local
-  -> report_formatter.py / notifier.py / notion_reporter.py
-  -> Markdown local + Slack + Notion
+## Flux de données
+
 ```
+Aircall (appels entrants/sortants)
+  └─► Worker Cloudflare (driveco-aircall-worker)
+        └─► call_fetcher.py  ─── récupération par date, mapping lignes
+              └─► call_classifier.py  ─── classification métier
+                    ├─► metrics_builder.py  ─── KPIs téléphoniques
+                    └─► [sélection 75% analysables]
+                          └─► Aircall API /v1/calls/{id}/transcription
+                                └─► ollama_client.py (Gemma 4)
+                                      ├─► passe QA (scoring agent)
+                                      └─► passe VoC (topics, churn, verbatims)
+                                            └─► persistence.py  ─► Supabase (additif)
+                                                  └─► report_formatter.py
+                                                        ├─► notifier.py  ─► Slack (1 post)
+                                                        ├─► notion_reporter.py  ─► Notion
+                                                        ├─► Markdown local (qa-driveco-data/)
+                                                        └─► Obsidian vault
+```
+
+---
 
 ## Briques principales
 
 ### 1. Source appels
 
-- [worker Cloudflare externe](https://github.com/Demande-a-Kevin/driveco-aircall-worker) : collecte les appels Aircall et les expose
-- [d1_client.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/d1_client.py) : client HTTP vers le worker
-- [call_fetcher.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/call_fetcher.py) : récupération des appels par date, mapping des lignes, enrichissement transcript
+**Worker Cloudflare** (`driveco-aircall-worker`) : reçoit les webhooks Aircall et expose des endpoints de consultation.
 
-Le code Python ne parle pas directement à D1. Il passe par les endpoints du worker via :
-- `CF_WORKER_URL`
-- `CF_WORKER_AUTH`
+- `d1_client.py` — client HTTP vers le worker
+- `call_fetcher.py` — récupération par date, mapping lignes, enrichissement transcripts
+
+> Le code Python ne parle **jamais directement** à D1. Tout passe par `CF_WORKER_URL` + `CF_WORKER_AUTH`.
 
 ### 2. Classification métier
 
-- [call_classifier.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/call_classifier.py)
+`call_classifier.py` identifie le type de chaque appel :
 
-Types importants :
-- `ucc_handled` : appel traité par l'UCC sur la ligne assistance
-- `warm_transfer` : transfert initié depuis l'UCC
-- `ucc_transfer_handled` : appel pris par Driveco après transfert
-- `b2b_direct` / `driveco_direct` : appels reçus directement côté Driveco
+| Type | Description |
+|------|-------------|
+| `ucc_handled` | Appel traité par l'UCC sur la ligne Assistance |
+| `warm_transfer` | Transfert chaud initié par l'UCC |
+| `ucc_transfer_handled` | Appel pris par Driveco après transfert UCC |
+| `b2b_direct` | Appel entrant direct côté Driveco B2B |
+| `driveco_direct` | Appel entrant direct Driveco standard |
 
-Scopes QA :
-- `UCC` : `ucc_handled` + `warm_transfer`
-- `Driveco Care` : `ucc_transfer_handled` + `b2b_direct` + `driveco_direct`
-- `QA global` : union des deux, sans doublons
+**Scopes QA** :
+- `UCC` = `ucc_handled` + `warm_transfer`
+- `Driveco Care` = `ucc_transfer_handled` + `b2b_direct` + `driveco_direct`
+- `global` = union sans doublons
 
-### 3. Transcripts
+**Deux lignes physiques distinctes** (IDs de numéro Aircall différents) :
+- **Ligne Assistance Driveco** — appels UCC + transferts entrants
+- **Ligne Driveco UCC transfert** — appels UCC transférés vers Driveco Care
 
-- source transcript retenue : `GET /v1/calls/{id}/transcription`
-- parsing Aircall AI : `transcription.content.utterances`
-- nettoyage / diarisation : dans [call_fetcher.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/call_fetcher.py)
+### 3. KPIs téléphoniques (`metrics_builder.py`)
 
-Le transcript enrichi est utilisé pour :
-- la raison d'appel
-- les soft skills
-- l'évaluation procédure / KB
-- la VoC client : topics, verbatims, churn risk, perception produit
+Calculs non-triviaux à connaître :
 
-Le champ `Call Timeline` est conservé comme trace, mais ce n'est pas la source transcript principale.
+**Answer rate** ≠ `answered / total_calls`.  
+La base est restreinte aux appels "answerables", en excluant :
+- Call deflector (`ivr_branch key_3 / "deflect"`)
+- Abandons pré-sonnerie : `abandoned_in_ivr`, `short_abandoned`, `out_of_opening_hours`
 
-### 4. Orchestration
+```
+answer_rate = answered / (total - deflected - ivr_pre_ring_abandons)
+```
 
-- [analysis_pipeline.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/analysis_pipeline.py)
-- [persistence.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/persistence.py)
+**Abandon rate** : basé sur `total_calls` (tous inbounds), différent de la base answer rate.
 
-Modes :
-- `daily`
-- `weekly`
-- `reliability`
-- `test`
-- `benchmark` via [run_from_cron.sh](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/run_from_cron.sh)
+**Pics d'appels** : fenêtres horaires top 3, avec call_ids représentatifs pour liens Aircall.
 
-Étapes du `daily` :
-1. récupération des appels du jour
-2. classification métier
-3. persistance additif calls / agents vers Supabase si configuré
-4. calcul des KPIs globaux
-5. sélection de `75%` des appels analysables
-6. enrichissement transcript
-7. persistance transcripts vers Supabase si configuré
-8. pre-screening Ollama
-9. analyse batchée Ollama QA : extraction -> scoring
-10. passe VoC Ollama séparée
-11. persistance évaluations + snapshots + llm_runs vers Supabase si configuré
-12. purge rétention verbatims VoC
-13. consolidation locale
-14. génération des sorties
+**Churn risk** : agrégé en typologie `{élevé: N, modéré: N, total: N}`.
 
-### 5. LLM
+### 4. Transcripts
 
-- [ollama_client.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/ollama_client.py)
-- [llm_client.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/llm_client.py)
-- [system_prompt.txt](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/system_prompt.txt)
+Source : `GET /v1/calls/{id}/transcription` (Aircall AI)  
+Format : `transcription.content.utterances` (diarisation speaker/agent)
 
-État actuel :
-- modèle local principal : `gemma4:latest`
-- pre-screening : Ollama local
-- analyse QA : Ollama local
-- analyse VoC : Ollama local, séparée de la QA agent
-- Anthropic : présent dans le code, mais actuellement désactivé en pratique par manque de crédit
+Le transcript enrichi alimente deux passes LLM distinctes et indépendantes :
+- **Passe QA** : scoring rubric, soft skills, procédures, KB compliance
+- **Passe VoC** : topics, verbatims client, churn risk, perception produit, besoins non couverts
 
-Important :
-- le fallback local reste critique
-- si Ollama ne répond pas correctement, le pipeline doit continuer avec une sortie dégradée mais exploitable
+### 5. Base de connaissances (KB)
 
-### 6. Reporting
+Source primaire depuis lot 13 : **vault Obsidian local**
 
-- [metrics_builder.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/metrics_builder.py)
-- [report_formatter.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/report_formatter.py)
-- [notifier.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/notifier.py)
-- [notion_reporter.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/notion_reporter.py)
-- [gdrive_uploader.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/gdrive_uploader.py)
+```
+OBSIDIAN_VAULT_DIR  = /Users/kev1n/Documents/Obsidian/Kev1n
+OBSIDIAN_KB_SUBDIR  = Driveco QA/KB
+OBSIDIAN_KB_ENABLED = true
+```
 
-Sorties possibles :
-- Markdown local dans `qa-driveco-data/`
-- Slack
-- Slack `VoC alerts` si configuré
-- Notion
-- Google Drive si les credentials existent
+Le pipeline lit les `.md` du sous-dossier à chaque run (YAML frontmatter + body).  
+Fallback sur Notion si `OBSIDIAN_KB_ENABLED=false`.
 
-### 7. Persistance analytique
+Le miroir Notion → Obsidian est maintenu par le pipeline lui-même (synced à chaque run).
 
-- [db/migrations/001_init.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/001_init.sql)
-- [db/migrations/004_metrics_agent.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/004_metrics_agent.sql)
-- [db/migrations/005_reliability.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/005_reliability.sql)
-- [db/migrations/006_views.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/006_views.sql)
-- [db/migrations/003_voc.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/003_voc.sql)
-- [db/migrations/007_voc_signals_opportunities.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/007_voc_signals_opportunities.sql)
-- [db/migrations/008_product_area.sql](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/db/migrations/008_product_area.sql)
-- [persistence.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/persistence.py)
-- [voc_taxonomy.yaml](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.yaml)
-- [voc_taxonomy.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/voc_taxonomy.py)
-- [reliability.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/reliability.py)
-- [health_server.py](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/health_server.py)
+### 6. LLM
 
-Supabase est additif :
-- D1 reste la source calls existante
-- le pipeline pousse en plus `agents`, `calls`, `transcripts`, `evaluations`, `soft_skills`, `issues`, `daily_kpi_snapshot`, `llm_runs`
-- la couche VoC ajoute `voc_extracts`, `topic_mentions`, `entity_perceptions`, `verbatims`, `competitor_mentions`, `voc_signals`, `voc_taxonomy`
-- la couche VoC enrichie ajoute `agent_best_practices`, `product_area`, `caller_hash` et `resolution_status`
-- la couche pilotage ajoute `anomaly_events`, `shadow_runs` et des snapshots `daily_kpi_snapshot` par agent
-- si Supabase n'est pas configuré, le pipeline continue sans erreur bloquante
+- `ollama_client.py` — Ollama local (Gemma 4, batch de 3 appels, 2 workers parallèles)
+- `llm_client.py` — abstraction Anthropic (intégré, non opérationnel actuellement)
+- `system_prompt.txt` — prompt système QA
+- `prompts/voc_system.txt` — prompt VoC séparé
 
-## Séparation QA vs VoC
+> Le fallback local est critique. Si Ollama échoue, le pipeline continue avec une sortie dégradée (`run_degraded=true`) mais reste exploitable.
 
-La QA agent et la VoC client sont volontairement séparées :
-- la QA juge la qualité de traitement de l'agent
-- la VoC décrit ce que le client dit du produit, de la marque, des bornes ou du support
-- une citation VoC invalide est rejetée côté Python
-- les verbatims publiés sont anonymisés
-- le daily report passe par un registre `actionable_items` dédupliqué pour éviter les répétitions Slack / Markdown
+### 7. Orchestration (`analysis_pipeline.py`)
+
+Modes disponibles :
+
+| Mode | Description |
+|------|-------------|
+| `daily` | Run principal — appels J-1 |
+| `weekly` | Agrégation hebdomadaire — 0 pass LLM, réutilise les évaluations des dailies |
+| `reliability` | Gold set scoring — benchmark de qualité sur un set de contrôle |
+| `test` | Test de connectivité léger |
+
+**Étapes du `daily`** :
+1. Récupération appels J-1
+2. Classification métier
+3. Persistance calls/agents Supabase (additif)
+4. Calcul KPIs globaux + par ligne
+5. Sélection ~75 % des appels analysables
+6. Enrichissement transcripts
+7. Persistance transcripts Supabase
+8. Pre-screening Ollama (scoring rapide)
+9. Analyse QA batchée Ollama (extraction → scoring)
+10. Passe VoC Ollama (séparée)
+11. Persistance évaluations / snapshots / llm_runs Supabase
+12. Purge rétention verbatims VoC
+13. Consolidation locale
+14. Génération des sorties (Slack, Notion, Markdown, Obsidian)
+
+**Étapes du `weekly`** (lot 12) :
+- Récupère les appels de la semaine (Lun→Dim)
+- **Réutilise les évaluations déjà persistées** des dailies correspondants (0 pass LLM)
+- Pure agrégation : moyennes, tendances, top problèmes de la semaine
+- Abandonne si le daily du dimanche est absent (garde-fou lot 11)
+
+### 8. Reporting
+
+**Slack** (`notifier.py`) : **un seul post par run daily** (règle absolue depuis lot 14).
+
+Contenu du post :
+1. Header + date + résumé run
+2. KPIs globaux (Inbounds / Answer rate / Durée / Abandon / Escalades)
+3. Bloc Ligne Assistance Driveco
+4. Bloc Ligne Driveco UCC transfert
+5. Éligibles QA / Analysés / Transcripts
+6. Routage IVR (répartition touches)
+7. Pics d'appels (top 3 fenêtres horaires)
+8. Voix du client (top topics, labels humains, max 6)
+9. Risque client (élevé N / modéré N)
+10. Alertes (appels problématiques avec liens Aircall directs)
+11. Clients frustrés / repeat callers (scope Assistance uniquement)
+
+**Markdown** : fichier local `qa-driveco-data/YYYY-MM-DD_daily_report.md`
+
+**Notion** (`notion_reporter.py`) : sous-page quotidienne sous `NOTION_REPORTS_PAGE_ID`
+
+**Obsidian** : note daily dans `Driveco QA/Daily/`
+
+**Google Drive** (`gdrive_uploader.py`) : optionnel, nécessite credentials OAuth locaux
+
+### 9. Persistance analytique (`persistence.py`)
+
+Supabase (PostgreSQL) — totalement additif, le pipeline fonctionne sans.
+
+Tables principales :
+- `calls`, `agents` — données Aircall normalisées
+- `transcripts` — transcripts enrichis
+- `evaluations` — résultats QA par appel
+- `soft_skills`, `issues` — détail rubric
+- `daily_kpi_snapshot` — snapshot KPIs par date / scope / agent
+- `llm_runs` — traçabilité des appels LLM
+
+Tables VoC :
+- `voc_extracts`, `topic_mentions`, `verbatims`
+- `entity_perceptions`, `competitor_mentions`
+- `voc_signals` (tendances agrégées)
+
+Tables pilotage :
+- `anomaly_events`, `shadow_runs`
+- `agent_best_practices`, `kb_gaps`
+- `caller_hash` (hachage pour cohérence analytique sans exposer numéros bruts)
+
+---
 
 ## Runtime local vs repo source
 
-Il y a deux emplacements importants.
-
 ### Repo source
-
-Chemin de travail :
-- [repo source](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline)
-
-Tu modifies le code ici.
+`/Users/kev1n/Desktop/Kev1n IA/Codex/driveco-qa-pipeline`  
+→ Point de travail. Toutes les modifications de code se font ici.
 
 ### Runtime launchd
+`~/Library/Application Support/driveco-qa-pipeline/runtime`  
+→ Répertoire exécuté par macOS. C'est une copie synchronisée du repo source.
 
-Chemin exécuté par l'automatisation :
-- [runtime launchd](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime)
-
-`launchd` exécute le runtime, pas directement le repo.
-
-Conséquence :
-- après une modif de code ou de `.env`, il faut resynchroniser le runtime
-
-Commande :
+**Règle** : après toute modification de code ou de `.env`, resynchroniser :
 
 ```bash
 cd "/Users/kev1n/Desktop/Kev1n IA/Codex/driveco-qa-pipeline"
@@ -193,45 +223,56 @@ bash sync_launchd_runtime.sh
 bash setup_launchd.sh
 ```
 
-## Automatisation
+---
 
-Scripts principaux :
-- [setup_launchd.sh](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/setup_launchd.sh)
-- [sync_launchd_runtime.sh](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/sync_launchd_runtime.sh)
-- [run_from_cron.sh](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/run_from_cron.sh)
-- [run_daily_watchdog.sh](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/run_daily_watchdog.sh)
+## Automatisation launchd
 
-Jobs `launchd` :
-- benchmark : `01:30`
-- daily : `05:15`
-- watchdog daily : `06:45`
-- reliability : lundi `04:00`
-- weekly : lundi `07:15`
+Jobs installés dans `~/Library/LaunchAgents/` :
 
-## Données locales
+| Job | Déclenchement | Label |
+|-----|---------------|-------|
+| benchmark | Tous les jours 01:30 | `com.kev1n.driveco.qa.benchmark` |
+| daily | Tous les jours **02:30** | `com.kev1n.driveco.qa.daily` |
+| watchdog daily | Tous les jours 06:45 | `com.kev1n.driveco.qa.daily-watchdog` |
+| reliability | Lundi 04:00 | `com.kev1n.driveco.qa.reliability` |
+| weekly | Lundi **07:15** | `com.kev1n.driveco.qa.weekly` |
 
-Répertoires importants :
-- [qa-driveco-data](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/qa-driveco-data)
-- [runtime data](/Users/kev1n/Library/Application%20Support/driveco-qa-pipeline/runtime/qa-driveco-data)
+Scripts :
+- `setup_launchd.sh` — crée le runtime + installe les plists
+- `sync_launchd_runtime.sh` — synchronise repo → runtime
+- `run_from_cron.sh` — wrapper de lancement (lock, log, état)
+- `run_daily_watchdog.sh` — relance le daily si absent ou bloqué
 
-Contenu typique :
-- `logs/`
-- `state/`
-- `cache/`
-- rapports quotidiens / hebdo
+> **Piège connu** : après un reboot, `com.kev1n.driveco.qa.weekly` peut ne pas être chargé alors que les 4 autres le sont. Toujours vérifier avec `launchctl list | grep driveco` (5 jobs attendus).
 
-Le repo n'est pas censé contenir les données runtime lourdes ou les archives locales de production.
+---
+
+## Séparation QA agent vs VoC client
+
+Principe fondamental — ne jamais mélanger ces deux dimensions :
+
+| QA agent | VoC client |
+|----------|-----------|
+| Juge la qualité de traitement de l'agent | Décrit ce que le client dit du produit / service |
+| Rubric, soft skills, KB compliance | Topics, verbatims, churn risk, perception |
+| `evaluations`, `soft_skills`, `issues` | `voc_extracts`, `topic_mentions`, `verbatims` |
+| Passe LLM QA (`system_prompt.txt`) | Passe LLM VoC (`prompts/voc_system.txt`) |
+
+Les résultats QA et VoC sont rendus **ensemble** dans le post Slack/rapport Markdown mais restent **séparés côté données**.
+
+---
 
 ## Limites connues
 
-- `Gemma 4` améliore la finesse QA mais reste encore instable sur certains batches
-- le pre-screening Gemma 4 a été adapté, mais le modèle n'est pas encore parfaitement prévisible
-- Anthropic n'est pas opérationnel tant que le sujet billing n'est pas réglé
-- Google Drive ne publiera rien sans les fichiers OAuth locaux
+- Gemma 4 améliore la finesse QA mais produit parfois des réponses JSON instables (batches longs)
+- Anthropic non opérationnel actuellement (billing) — le fallback Ollama reste la voie unique
+- Google Drive ne publie rien sans les fichiers OAuth locaux
+- Le job launchd `weekly` peut se décrocher après un reboot macOS
 
-## Lecture recommandée
+---
 
-Pour quelqu'un qui découvre le projet :
-1. lire [README.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/README.md)
-2. lire ce document
-3. lire [RUNBOOK.md](/Users/kev1n/Desktop/Kev1n%20IA/Codex/driveco-qa-pipeline/RUNBOOK.md)
+## Lecture recommandée pour débuter
+
+1. `README.md` — installation et commandes
+2. Ce document
+3. `RUNBOOK.md` — exploitation et incidents fréquents
