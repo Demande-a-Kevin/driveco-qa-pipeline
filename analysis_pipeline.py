@@ -1007,7 +1007,7 @@ def save_analysis_to_d1(call_evaluations: list[dict]):
 
 def _build_run_record(mode: str, target_date: datetime) -> dict:
     return {
-        "id": persistence.build_llm_run_id(mode, target_date),
+        "id": os.environ.get("PIPELINE_LLM_RUN_ID") or persistence.build_llm_run_id(mode, target_date),
         "started_at": datetime.now(timezone.utc).isoformat(),
         "ended_at": None,
         "mode": mode,

@@ -887,3 +887,16 @@ def fetch_active_prompt_override() -> dict | None:
         log.warning("[persistence] fetch_active_prompt_override failed: %s", exc)
         return None
     return r.data[0] if r.data else None
+
+
+def fetch_llm_run(run_id: str):
+    """Retourne la row llm_runs pour un id donné, ou None."""
+    supa = client()
+    if supa is None:
+        return None
+    try:
+        r = supa.table("llm_runs").select("*").eq("id", run_id).limit(1).execute()
+    except Exception as exc:  # pragma: no cover - défensif
+        log.warning("[persistence] fetch_llm_run failed: %s", exc)
+        return None
+    return r.data[0] if r.data else None
