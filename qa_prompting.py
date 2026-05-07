@@ -12,8 +12,23 @@ _PROMPTS_DIR = _BASE_DIR / "prompts"
 _EXAMPLES_DIR = _PROMPTS_DIR / "examples"
 _VOC_EXAMPLES_DIR = _EXAMPLES_DIR / "voc"
 
+# Override runtime injecté par analysis_pipeline via set_effective_base_prompt().
+# Si None → fallback sur system_prompt.txt (rétrocompat tests / usages directs).
+_EFFECTIVE_BASE_PROMPT: str | None = None
+
+
+def set_effective_base_prompt(text: str | None) -> None:
+    """Override le prompt système baseline (utilisé par runtime_config).
+
+    Passer None pour revenir au fichier `system_prompt.txt`.
+    """
+    global _EFFECTIVE_BASE_PROMPT
+    _EFFECTIVE_BASE_PROMPT = text
+
 
 def load_base_system_prompt() -> str:
+    if _EFFECTIVE_BASE_PROMPT is not None:
+        return _EFFECTIVE_BASE_PROMPT.strip()
     return (_BASE_DIR / "system_prompt.txt").read_text(encoding="utf-8").strip()
 
 

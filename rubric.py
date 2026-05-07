@@ -9,6 +9,20 @@ import yaml
 
 _RUBRIC_PATH = Path(__file__).resolve().parent / "rubric.yaml"
 
+# Override runtime injecté par analysis_pipeline via set_effective_rubric().
+# Si None → fallback sur rubric.yaml (rétrocompat tests / usages directs).
+_EFFECTIVE_RUBRIC: dict[str, Any] | None = None
+
+
+def set_effective_rubric(rubric: dict[str, Any] | None) -> None:
+    """Override la rubric active (utilisé par runtime_config).
+
+    `rubric` doit avoir au minimum `criteria` (liste) et idéalement `version`.
+    Passer None pour revenir au fichier `rubric.yaml`.
+    """
+    global _EFFECTIVE_RUBRIC
+    _EFFECTIVE_RUBRIC = rubric
+
 
 @lru_cache(maxsize=1)
 def load_rubric() -> dict[str, Any]:
@@ -22,12 +36,18 @@ def load_rubric() -> dict[str, Any]:
     return rubric
 
 
+def _active_rubric() -> dict[str, Any]:
+    if _EFFECTIVE_RUBRIC is not None:
+        return _EFFECTIVE_RUBRIC
+    return load_rubric()
+
+
 def rubric_version() -> str:
-    return str(load_rubric().get("version") or "unknown")
+    return str(_active_rubric().get("version") or "unknown")
 
 
 def rubric_criteria() -> list[dict[str, Any]]:
-    return list(load_rubric()["criteria"])
+    return list(_active_rubric()["criteria"])
 
 
 def rubric_keys() -> list[str]:

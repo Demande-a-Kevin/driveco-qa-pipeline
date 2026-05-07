@@ -45,13 +45,16 @@ import notion_kb_sync
 import obsidian_kb_fetcher as _obsidian_kb_fetcher
 import llm_client
 import ollama_client
+import qa_prompting
 import reliability
 import report_formatter
 import notifier
 import d1_client
 import config
 import persistence
+import rubric as rubric_module
 import schemas
+from runtime_config import load_runtime_config
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -84,8 +87,46 @@ def _sync_kb_if_enabled() -> None:
         log.warning(f"[kb-sync] échec non bloquant : {exc}")
 
 
-# Charge le system prompt depuis le fichier texte
-SYSTEM_PROMPT = (Path(__file__).parent / "system_prompt.txt").read_text(encoding="utf-8")
+# ── Runtime config (DB QA-UCC > fichiers Git) ─────────────────────────────────
+# Résolu au boot, une seule fois. Fournit le prompt système effectif, la rubric
+# active et les FK (pipeline_config_id, rubric_version_id, prompt_override_id)
+# qui seront propagés dans chaque run llm_runs.
+RUNTIME_ROOT = Path(__file__).resolve().parent
+
+try:
+    runtime_cfg = load_runtime_config(
+        prompt_path=RUNTIME_ROOT / "system_prompt.txt",
+        rubric_path=RUNTIME_ROOT / "rubric.yaml",
+        db=persistence,
+    )
+except Exception as exc:  # pragma: no cover - défensif
+    log.warning("[runtime_config] échec chargement, fallback fichiers: %s", exc)
+    from runtime_config import RuntimeConfig as _RuntimeConfig
+
+    _baseline = (RUNTIME_ROOT / "system_prompt.txt").read_text(encoding="utf-8")
+    runtime_cfg = _RuntimeConfig(effective_prompt=_baseline, prompt_source="file")
+
+for _w in runtime_cfg.warnings:
+    log.warning("runtime_config: %s", _w)
+log.info(
+    "[runtime_config] prompt_source=%s rubric=%s degraded=%s",
+    runtime_cfg.prompt_source,
+    runtime_cfg.rubric_version_label,
+    runtime_cfg.degraded,
+)
+
+# Propager le prompt et la rubric effectifs aux helpers (qa_prompting, rubric)
+qa_prompting.set_effective_base_prompt(runtime_cfg.effective_prompt)
+if runtime_cfg.rubric_criteria is not None and runtime_cfg.rubric_version_id:
+    rubric_module.set_effective_rubric(
+        {
+            "version": runtime_cfg.rubric_version_label,
+            "criteria": runtime_cfg.rubric_criteria,
+        }
+    )
+
+# Conserve l'ancien nom pour rétrocompat éventuelle
+SYSTEM_PROMPT = runtime_cfg.effective_prompt
 
 # Tailles de batch
 BATCH_SIZE      = config.ANALYSIS_BATCH_SIZE_TX   # 5 — batch avec transcripts
@@ -976,6 +1017,12 @@ def _build_run_record(mode: str, target_date: datetime) -> dict:
         "tokens_total": 0,
         "status": "started",
         "raw": {},
+        # Traçabilité runtime (Tâche 7)
+        "trigger_source": os.environ.get("PIPELINE_TRIGGER_SOURCE", "cron"),
+        "triggered_by": os.environ.get("PIPELINE_TRIGGERED_BY"),
+        "pipeline_config_id": runtime_cfg.pipeline_config_id,
+        "rubric_version_id": runtime_cfg.rubric_version_id,
+        "prompt_override_id": runtime_cfg.prompt_override_id,
     }
 
 
@@ -988,13 +1035,20 @@ def _finalize_run_record(run_record: dict, status: str, analyzed_calls_count: in
         raw_payload["run_health"] = run_health
     if batch_stats:
         raw_payload["batch_stats"] = batch_stats
+    # Escalade le statut à "degraded" si runtime_cfg signale un drift et que
+    # le run aurait sinon été un succès. Préserve les autres causes (cf.
+    # RUN_DEGRADED_THRESHOLD géré par build_run_health_summary).
+    final_status = status
+    if status == "success" and runtime_cfg.degraded:
+        final_status = "degraded"
+        raw_payload.setdefault("runtime_warnings", list(runtime_cfg.warnings))
     run_record.update(
         {
             "ended_at": datetime.now(timezone.utc).isoformat(),
             "calls_count": analyzed_calls_count,
             "errors_count": errors_count,
             "tokens_total": int(llm_usage.get("anthropic_input_tokens", 0) or 0) + int(llm_usage.get("anthropic_output_tokens", 0) or 0),
-            "status": status,
+            "status": final_status,
             "raw": raw_payload,
         }
     )
