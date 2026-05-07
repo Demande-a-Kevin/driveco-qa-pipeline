@@ -636,6 +636,13 @@ def save_llm_run(run: dict) -> bool:
         "tokens_total": run.get("tokens_total"),
         "status": run.get("status") or "unknown",
         "raw": _json_safe(run.get("raw") or {}),
+        "trigger_source": run.get("trigger_source") or "cron",
+        "triggered_by": run.get("triggered_by"),
+        "params": _json_safe(run.get("params") or {}),
+        "logs_excerpt": run.get("logs_excerpt"),
+        "pipeline_config_id": run.get("pipeline_config_id"),
+        "rubric_version_id": run.get("rubric_version_id"),
+        "prompt_override_id": run.get("prompt_override_id"),
     }
     if not row["id"] or not row["started_at"]:
         return False
@@ -825,3 +832,58 @@ def persist_evaluations(source_calls: list[dict], evaluations: list[dict]) -> in
         if source_call and save_evaluation(source_call, evaluation):
             saved += 1
     return saved
+
+
+# ---- Active runtime config helpers (QA-UCC) ----
+# Utilisés par runtime_config.load_runtime_config() au boot de la pipeline.
+# Retournent None si la table est vide ou si Supabase indisponible.
+
+def fetch_active_pipeline_config() -> dict | None:
+    """Retourne la row pipeline_config active ou None."""
+    supa = client()
+    if supa is None:
+        return None
+    try:
+        r = supa.table("pipeline_config").select("*").eq("is_active", True).limit(1).execute()
+    except Exception as exc:  # pragma: no cover - défensif
+        log.warning("[persistence] fetch_active_pipeline_config failed: %s", exc)
+        return None
+    return r.data[0] if r.data else None
+
+
+def fetch_active_rubric() -> dict | None:
+    """Retourne la row rubric_versions active ou None."""
+    supa = client()
+    if supa is None:
+        return None
+    try:
+        r = (
+            supa.table("rubric_versions")
+            .select("id,version,criteria,yaml_source")
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover - défensif
+        log.warning("[persistence] fetch_active_rubric failed: %s", exc)
+        return None
+    return r.data[0] if r.data else None
+
+
+def fetch_active_prompt_override() -> dict | None:
+    """Retourne la row prompt_overrides active ou None."""
+    supa = client()
+    if supa is None:
+        return None
+    try:
+        r = (
+            supa.table("prompt_overrides")
+            .select("id,override_text,baseline_sha,active_until")
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover - défensif
+        log.warning("[persistence] fetch_active_prompt_override failed: %s", exc)
+        return None
+    return r.data[0] if r.data else None
