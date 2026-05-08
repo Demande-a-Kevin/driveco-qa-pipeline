@@ -298,3 +298,19 @@ Modifier et réinstaller :
 ```bash
 DAILY_HOUR=4 DAILY_MINUTE=0 bash setup_launchd.sh
 ```
+
+---
+
+## Configuration depuis le cockpit (depuis 2026-05-07)
+
+Depuis l'intégration QA UCC dans le cockpit, la config (rubric, prompt, sampling)
+peut être éditée depuis https://cockpit.kev1ncockpit.com/qa/config.
+
+La pipeline lit la config effective au boot via `runtime_config.load_runtime_config()` :
+1. Tables QA-UCC : `pipeline_config`, `rubric_versions`, `prompt_overrides` (active row)
+2. Fallback : `system_prompt.txt`, `rubric.yaml`, `config.py` (Git)
+
+Voir :
+- `runtime_config.py` — résolution déterministe DB + Git
+- `analysis_pipeline.py:91+` — boot wiring
+- Spec : `~/workspace/personal/kev1n-cockpit/docs/superpowers/specs/2026-05-05-qa-cockpit-integration-design.md`
