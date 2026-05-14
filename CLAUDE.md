@@ -102,8 +102,8 @@ Le post contient dans l'ordre :
 5. Éligibles QA / Analysés / Transcripts
 6. Routage IVR
 7. Pics d'appels (top 3 fenêtres)
-8. Voix du client (top topics, labels humains)
-9. Risque client (typologie élevé N / modéré N)
+8. Raisons d'appel (catégories + sous-motifs actionnables)
+9. Opportunités / bonnes pratiques / concurrents si détectés
 10. Alertes (appels problématiques avec liens Aircall)
 11. Clients frustrés / repeat callers (ligne Assistance uniquement)
 

@@ -21,6 +21,7 @@ _HEADERS = {
 }
 
 _MAX_BLOCK_TEXT = 1900  # Limite Notion : 2000 chars par rich_text
+_NOTION_TIMEOUT_SECONDS = 60
 
 
 def _rich_text(text: str) -> list[dict]:
@@ -130,6 +131,70 @@ def _chunk_blocks(blocks: list[dict], size: int = 100) -> list[list[dict]]:
 
 # ── Création / mise à jour des pages Notion ───────────────────────────────────
 
+def _list_block_children(block_id: str) -> list[dict]:
+    children: list[dict] = []
+    cursor = None
+    while True:
+        params = {"page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        resp = requests.get(
+            f"{_BASE}/blocks/{block_id}/children",
+            headers=_HEADERS,
+            params=params,
+            timeout=_NOTION_TIMEOUT_SECONDS,
+        )
+        if resp.status_code != 200:
+            log.warning(
+                "[notion_reporter] Lecture children échouée : %s — %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            return children
+        payload = resp.json()
+        children.extend(payload.get("results") or [])
+        if not payload.get("has_more"):
+            return children
+        cursor = payload.get("next_cursor")
+
+
+def _find_child_page_by_title(parent_id: str, title: str) -> str | None:
+    for child in _list_block_children(parent_id):
+        if child.get("type") != "child_page":
+            continue
+        child_title = ((child.get("child_page") or {}).get("title") or "").strip()
+        if child_title == title:
+            return child.get("id")
+    return None
+
+
+def _archive_children(page_id: str) -> None:
+    for child in _list_block_children(page_id):
+        child_id = child.get("id")
+        if not child_id:
+            continue
+        resp = requests.delete(f"{_BASE}/blocks/{child_id}", headers=_HEADERS, timeout=_NOTION_TIMEOUT_SECONDS)
+        if resp.status_code != 200:
+            log.warning(
+                "[notion_reporter] Archivage block échoué : %s — %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+
+
+def _append_blocks(page_id: str, blocks: list[dict]) -> None:
+    for chunk in _chunk_blocks(blocks, 100):
+        patch_resp = requests.patch(
+            f"{_BASE}/blocks/{page_id}/children",
+            headers=_HEADERS,
+            json={"children": chunk},
+            timeout=_NOTION_TIMEOUT_SECONDS,
+        )
+        if patch_resp.status_code != 200:
+            log.warning(f"[notion_reporter] Patch blocks partiel échoué : {patch_resp.status_code}")
+            break
+
+
 def _create_page(title: str, blocks: list[dict]) -> str | None:
     """
     Crée une sous-page sous NOTION_REPORTS_PAGE_ID.
@@ -149,7 +214,7 @@ def _create_page(title: str, blocks: list[dict]) -> str | None:
         "children": first_chunk,
     }
 
-    resp = requests.post(f"{_BASE}/pages", headers=_HEADERS, json=payload, timeout=30)
+    resp = requests.post(f"{_BASE}/pages", headers=_HEADERS, json=payload, timeout=_NOTION_TIMEOUT_SECONDS)
     if resp.status_code != 200:
         log.error(f"[notion_reporter] Création page échouée : {resp.status_code} — {resp.text[:300]}")
         return None
@@ -160,18 +225,18 @@ def _create_page(title: str, blocks: list[dict]) -> str | None:
     log.info(f"[notion_reporter] Page créée : {title} → {page_url}")
 
     # Blocks suivants en patches si le rapport est long
-    for chunk in _chunk_blocks(blocks[100:], 100):
-        patch_resp = requests.patch(
-            f"{_BASE}/blocks/{page_id}/children",
-            headers=_HEADERS,
-            json={"children": chunk},
-            timeout=30,
-        )
-        if patch_resp.status_code != 200:
-            log.warning(f"[notion_reporter] Patch blocks partiel échoué : {patch_resp.status_code}")
-            break
+    _append_blocks(page_id, blocks[100:])
 
     return page_url
+
+
+def _update_page(page_id: str, title: str, blocks: list[dict]) -> str | None:
+    """Remplace le contenu d'une page de rapport existante."""
+    _archive_children(page_id)
+    _append_blocks(page_id, blocks)
+    url = f"https://www.notion.so/{page_id.replace('-', '')}"
+    log.info(f"[notion_reporter] Page mise à jour : {title} → {url}")
+    return url
 
 
 # ── API publique ──────────────────────────────────────────────────────────────
@@ -206,7 +271,11 @@ def save_report_to_notion(report_md: str, date: datetime, mode: str, title_prefi
 
     try:
         blocks = _md_to_notion_blocks(report_md)
-        url = _create_page(title, blocks)
+        existing_page_id = _find_child_page_by_title(config.NOTION_REPORTS_PAGE_ID, title)
+        if existing_page_id:
+            url = _update_page(existing_page_id, title, blocks)
+        else:
+            url = _create_page(title, blocks)
         if url:
             print(f"[notion_reporter] 📝 Notion → {url}")
         return url

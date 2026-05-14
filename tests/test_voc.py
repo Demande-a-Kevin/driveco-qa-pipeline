@@ -154,6 +154,77 @@ class VoCTest(unittest.TestCase):
         self.assertIn("[email masqué]", summary["verbatims"][0]["quote"])
         self.assertIn("[téléphone masqué]", summary["verbatims"][0]["quote"])
 
+    def test_voc_summary_builds_granular_call_reasons(self):
+        evaluations = [
+            {
+                "call_id": "1",
+                "customer_call_reason": "Charge interrompue avec badge RFID",
+                "voc_extract": {
+                    "topics": [
+                        {
+                            "topic_code": "interruption_charge",
+                            "sentiment": "négatif",
+                            "severity": 4,
+                            "quote": "La charge s'arrête avec mon badge Chargemap",
+                        },
+                        {
+                            "topic_code": "badge_tiers",
+                            "sentiment": "négatif",
+                            "severity": 3,
+                            "quote": "Mon badge Chargemap ne relance pas la charge",
+                        },
+                    ],
+                    "entity_perceptions": [],
+                    "verbatim_quotes": [],
+                },
+            },
+            {
+                "call_id": "2",
+                "customer_call_reason": "Paiement TPE refusé",
+                "voc_extract": {
+                    "topics": [
+                        {
+                            "topic_code": "app_paiement",
+                            "sentiment": "négatif",
+                            "severity": 4,
+                            "quote": "Le paiement par carte bancaire sur le TPE est refusé",
+                        }
+                    ],
+                    "entity_perceptions": [],
+                    "verbatim_quotes": [],
+                },
+            },
+            {
+                "call_id": "3",
+                "customer_call_reason": "Impossible de trouver la borne sur le parking",
+                "voc_extract": {
+                    "topics": [
+                        {
+                            "topic_code": "localisation_borne",
+                            "sentiment": "négatif",
+                            "severity": 3,
+                            "quote": "Je ne trouve pas la borne sur le parking Carrefour",
+                        }
+                    ],
+                    "entity_perceptions": [],
+                    "verbatim_quotes": [],
+                },
+            },
+        ]
+
+        summary = metrics_builder.build_voc_summary(evaluations)
+        reasons = {item["label"]: item for item in summary["call_reasons"]}
+
+        self.assertIn("Interruption de charge", reasons)
+        self.assertIn("Paiement application", reasons)
+        self.assertIn("Difficulté à trouver la borne", reasons)
+        interruption_subreasons = {item["label"] for item in reasons["Interruption de charge"]["subreasons"]}
+        payment_subreasons = {item["label"] for item in reasons["Paiement application"]["subreasons"]}
+        location_subreasons = {item["label"] for item in reasons["Difficulté à trouver la borne"]["subreasons"]}
+        self.assertIn("Badge RFID / interopérabilité", interruption_subreasons)
+        self.assertIn("TPE / CB", payment_subreasons)
+        self.assertIn("Signalétique / borne introuvable", location_subreasons)
+
     def test_rgpd_opt_out_detection(self):
         self.assertTrue(persistence._call_rgpd_opt_out({"rgpd_opt_out": True}))
         self.assertTrue(persistence._call_rgpd_opt_out({"opt_out": "yes"}))

@@ -12,7 +12,7 @@ except ImportError:
 import config
 import persistence
 
-_AIRCALL_BASE = "https://asset.aircall.io/calls"
+_AIRCALL_BASE = "https://assets.aircall.io/calls"
 _ISSUE_TYPE_LABELS = {
     "manque_d_empathie": "Manque d'empathie",
     "mauvaise_qualification_b2b_b2c": "Mauvaise qualification B2B/B2C",
@@ -25,6 +25,19 @@ def _aircall_link_md(call_id) -> str:
     if not call_id or str(call_id) in ("?", ""):
         return str(call_id or "?")
     return f"[{call_id}]({_AIRCALL_BASE}/{call_id}/recording/info)"
+
+
+def _format_call_reason_line(item: dict) -> str:
+    label = item.get("label") or item.get("reason_code") or "Raison non classée"
+    count = int(item.get("count") or 0)
+    subreasons = []
+    for subreason in item.get("subreasons") or []:
+        sub_label = subreason.get("label")
+        sub_count = int(subreason.get("count") or 0)
+        if sub_label and sub_count:
+            subreasons.append(f"{sub_label}: {sub_count}")
+    detail = f" ({', '.join(subreasons[:4])})" if subreasons else ""
+    return f"- {label} — {count} appel(s){detail}"
 
 
 def _icon(value, key: str) -> str:
@@ -135,6 +148,7 @@ def _normalize_kb_items(items, section: str) -> list[str]:
 
 def _append_voc_section(lines: list[str], analysis: dict) -> None:
     summary = analysis.get("voc_summary") or {}
+    call_reasons = summary.get("call_reasons") or []
     top_topics = summary.get("top_topics") or []
     verbatims = summary.get("verbatims") or []
     weak_signals = summary.get("weak_signals") or []
@@ -142,12 +156,17 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
     opportunities = summary.get("opportunities") or []
     best_practices = summary.get("best_practices") or []
     positive_satisfaction = summary.get("positive_satisfaction") or {}
-    if not (top_topics or verbatims or weak_signals or competitors or opportunities or best_practices):
+    if not (call_reasons or top_topics or verbatims or weak_signals or competitors or opportunities or best_practices):
         return
 
-    lines += ["## Voix du client", ""]
+    lines += ["## Raisons d'appel", ""]
+    if call_reasons:
+        lines.append("### Raisons principales")
+        for item in call_reasons[:8]:
+            lines.append(_format_call_reason_line(item))
+        lines.append("")
     if top_topics:
-        lines.append("### Top topics")
+        lines.append("### Topics détectés")
         for item in top_topics[:5]:
             lines.append(f"- {item.get('label', item.get('topic_code'))} — {item.get('count', 0)} mention(s)")
         lines.append("")

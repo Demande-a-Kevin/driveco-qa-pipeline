@@ -16,7 +16,7 @@ import report_formatter
 OUTPUT = config.REPORT_OUTPUT_DIR
 
 _SLACK_API_URL = "https://slack.com/api/chat.postMessage"
-_AIRCALL_ASSET_BASE = "https://asset.aircall.io/calls"
+_AIRCALL_ASSET_BASE = "https://assets.aircall.io/calls"
 
 
 def _slack_sent_flag(kind: str, mode: str, date: datetime) -> Path:
@@ -128,6 +128,22 @@ def _format_duration(seconds) -> str:
     except (TypeError, ValueError):
         return str(seconds or "n/a")
     return f"{total // 60}min{total % 60:02d}s"
+
+
+def _format_call_reason_lines(call_reasons: list[dict], limit: int = 6) -> list[str]:
+    lines = []
+    for item in (call_reasons or [])[:limit]:
+        label = item.get("label") or item.get("reason_code") or "Raison non classée"
+        count = int(item.get("count") or 0)
+        subreasons = []
+        for subreason in item.get("subreasons") or []:
+            sub_label = subreason.get("label")
+            sub_count = int(subreason.get("count") or 0)
+            if sub_label and sub_count:
+                subreasons.append(f"{sub_label}: {sub_count}")
+        detail = f" ({', '.join(subreasons[:3])})" if subreasons else ""
+        lines.append(f"• *{label}* — {count} appel(s){detail}")
+    return lines
 
 
 def _normalize_issue_text(value) -> str:
@@ -561,36 +577,23 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         blocks.append({"type": "divider"})
 
     voc_summary = analysis.get("voc_summary") or {}
+    call_reasons = voc_summary.get("call_reasons") or []
     top_topics = voc_summary.get("top_topics") or []
     opportunities = voc_summary.get("opportunities") or []
     best_practices = voc_summary.get("best_practices") or []
     competitors = voc_summary.get("competitors") or []
-    churn_typology = voc_summary.get("churn_risk_typology") or {}
-    # Bloc unifié : une seule source (top_topics) pour garantir des counts
-    # cohérents. On ne rend plus la ligne "signaux faibles" brute (qui
-    # dupliquait l'info avec des labels non-traduits).
-    if top_topics:
-        topic_lines = [
+    # Bloc principal : on privilégie les raisons d'appel granulaires. Les
+    # top_topics restent en fallback pour les anciens rapports sans call_reasons.
+    reason_lines = _format_call_reason_lines(call_reasons)
+    if not reason_lines and top_topics:
+        reason_lines = [
             f"• *{item.get('label') or item.get('topic_code')}* — {item.get('count', 0)} mention(s)"
             for item in top_topics[:6]
         ]
+    if reason_lines:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "*🗣️ Voix du client :*\n" + "\n".join(topic_lines)},
-        })
-        blocks.append({"type": "divider"})
-
-    # ── Risque client (typologie plutôt que numéros + verbatims) ────────────
-    if churn_typology.get("total"):
-        parts = []
-        if churn_typology.get("eleve"):
-            parts.append(f"*élevé* : {churn_typology['eleve']} appel(s)")
-        if churn_typology.get("modere"):
-            parts.append(f"*modéré* : {churn_typology['modere']} appel(s)")
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn",
-                     "text": "*⚠️ Risque client détecté :*\n" + " · ".join(parts)},
+            "text": {"type": "mrkdwn", "text": "*Raisons d’appel :*\n" + "\n".join(reason_lines)},
         })
         blocks.append({"type": "divider"})
 
@@ -824,9 +827,9 @@ def send_alert(message: str, level: str = "warning") -> bool:
 
 def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
     summary = analysis.get("voc_summary") or {}
+    call_reasons = summary.get("call_reasons") or []
     weak_signals = summary.get("weak_signals") or []
-    churn_risk_calls = summary.get("churn_risk_calls") or []
-    if not weak_signals and not churn_risk_calls:
+    if not weak_signals and not call_reasons:
         return True
     if _slack_already_sent("voc", mode, date):
         print(f"[notifier] ℹ️  Slack VoC {mode} {date.strftime('%Y-%m-%d')} déjà envoyé — ignoré")
@@ -836,10 +839,23 @@ def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": f"Voix du client — {mode} {date_str}"},
+            "text": {"type": "plain_text", "text": f"Raisons d'appel — {mode} {date_str}"},
         }
     ]
+    reason_lines = _format_call_reason_lines(call_reasons, limit=8)
+    if reason_lines:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Raisons d’appel principales :*\n" + "\n".join(reason_lines),
+                },
+            }
+        )
     if weak_signals:
+        if reason_lines:
+            blocks.append({"type": "divider"})
         blocks.append(
             {
                 "type": "section",
@@ -852,23 +868,9 @@ def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
                 },
             }
         )
-    if churn_risk_calls:
-        blocks.append({"type": "divider"})
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "*Risque churn :*\n" + "\n".join(
-                        f"• Appel `{item.get('call_id', '?')}` — risque *{item.get('risk')}* — « {item.get('quote') or 'verbatim indisponible'} »"
-                        for item in churn_risk_calls[:5]
-                    ),
-                },
-            }
-        )
     ok = _post_to_slack(
         blocks,
-        text=f"Voix du client {mode} {date_str}",
+        text=f"Raisons d'appel {mode} {date_str}",
         channel=config.SLACK_VOC_ALERTS_CHANNEL_ID,
     )
     if ok:

@@ -52,7 +52,7 @@
 
 ## Onglets VoC
 
-1. `Voix du client`
+1. `Raisons d'appel / VoC`
    - `select * from public.v_voc_topics_trend_28d order by day desc, mentions desc;`
    - `select * from public.v_voc_entity_sentiment_30d order by day desc, mentions desc;`
    - `select * from public.v_voc_verbatims_pinned order by started_at desc;`

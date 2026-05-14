@@ -4,11 +4,13 @@ Fallback : API Aircall directe si le worker est indisponible.
 """
 from datetime import datetime
 from hashlib import sha256
+import logging
 import time
 import requests
 import d1_client
 import config
 
+log = logging.getLogger(__name__)
 _AIRCALL_API_SESSION = requests.Session()
 _CALL_DETAILS_CACHE: dict[str, dict | None] = {}
 _NUMBER_CALLS_CACHE: dict[str, list[dict]] = {}
@@ -50,9 +52,142 @@ def fetch_calls_for_date(date: datetime) -> list[dict]:
 
 def fetch_calls_range(ts_from: int, ts_to: int) -> list[dict]:
     """Récupère les appels entre deux timestamps unix."""
-    calls = d1_client.fetch_call_history(ts_from, ts_to)
-    # Normalise les noms de champs (le worker peut renvoyer camelCase ou snake_case)
-    return [_normalize_call(c) for c in calls]
+    try:
+        calls = d1_client.fetch_call_history(ts_from, ts_to)
+        if calls:
+            # Normalise les noms de champs (le worker peut renvoyer camelCase ou snake_case)
+            return [_normalize_call(c) for c in calls]
+        log.warning(
+            "[call_fetcher] D1 a renvoyé 0 appel (%s → %s), fallback Aircall direct",
+            ts_from,
+            ts_to,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "[call_fetcher] D1 indisponible (%s), fallback Aircall direct",
+            exc,
+        )
+    return fetch_calls_range_aircall_direct(ts_from, ts_to)
+
+
+def fetch_calls_range_aircall_direct(ts_from: int, ts_to: int) -> list[dict]:
+    """Fallback direct Aircall quand le cache D1 est vide ou indisponible."""
+    if not config.AIRCALL_API_ID or not config.AIRCALL_API_TOKEN:
+        log.warning("[call_fetcher] fallback Aircall direct impossible: credentials absents")
+        return []
+
+    tracked_lines = set(getattr(config, "AIRCALL_CALL_HISTORY_LINE_IDS", set()) or set())
+    calls: list[dict] = []
+    per_page = 50
+    for page in range(1, 101):
+        try:
+            data = _aircall_get(
+                "calls",
+                params={
+                    "from": int(ts_from),
+                    "to": int(ts_to),
+                    "order": "asc",
+                    "page": page,
+                    "per_page": per_page,
+                    "fetch_call_timeline": "true",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[call_fetcher] fallback Aircall direct échoué page=%s: %s", page, exc)
+            break
+        batch = data.get("calls") or []
+        if not batch:
+            break
+        for call in batch:
+            line_id = _parse_int((call.get("number") or {}).get("id"))
+            if tracked_lines and line_id not in tracked_lines:
+                continue
+            calls.append(_normalize_call(call))
+        if len(batch) < per_page:
+            break
+
+    log.info("[call_fetcher] fallback Aircall direct: %s appel(s) récupéré(s)", len(calls))
+    return calls
+
+
+def _duration_between(start, end) -> int:
+    try:
+        start_i = int(start)
+        end_i = int(end)
+    except (TypeError, ValueError):
+        return 0
+    if not start_i or not end_i or end_i < start_i:
+        return 0
+    return end_i - start_i
+
+
+def _join_names(items) -> str:
+    if not isinstance(items, list):
+        return str(items or "")
+    names = []
+    for item in items:
+        if isinstance(item, dict):
+            value = item.get("name") or item.get("title") or item.get("label")
+        else:
+            value = item
+        if value:
+            names.append(str(value))
+    return ", ".join(names)
+
+
+def _direct_number(c: dict) -> dict:
+    number = c.get("number")
+    return number if isinstance(number, dict) else {}
+
+
+def _direct_user_name(c: dict) -> str:
+    user = c.get("user")
+    if isinstance(user, dict):
+        return str(user.get("name") or "").strip()
+    return str(user or "").strip()
+
+
+def _extract_ivr_branches(c: dict) -> str:
+    options = c.get("ivr_options_selected") or c.get("ivr_options") or []
+    if not isinstance(options, list):
+        return ""
+    branches = []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        branch = option.get("branch") or option.get("title") or option.get("key")
+        if branch:
+            branches.append(str(branch))
+    return " > ".join(branches)
+
+
+def _extract_ivr_widgets(c: dict) -> str:
+    options = c.get("ivr_options_selected") or c.get("ivr_options") or []
+    if not isinstance(options, list):
+        return ""
+    widgets = []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        title = option.get("title") or option.get("id")
+        if title:
+            widgets.append(str(title))
+    return " > ".join(widgets)
+
+
+def _direct_recording_url(c: dict) -> str:
+    return str(c.get("recording") or c.get("asset") or c.get("Recording") or c.get("recordingUrl") or "")
+
+
+def _direct_call_type(c: dict) -> str:
+    if c.get("Call Type") or c.get("callType") or c.get("call_type"):
+        return str(c.get("Call Type") or c.get("callType") or c.get("call_type") or "")
+    direction = str(c.get("direction") or "").lower()
+    if direction == "inbound" and not c.get("answered_at"):
+        return "abandoned"
+    if direction:
+        return direction
+    return ""
 
 
 def _normalize_call(c: dict) -> dict:
@@ -64,46 +199,65 @@ def _normalize_call(c: dict) -> dict:
     """
     # Conversion "Call start time" → timestamp Unix
     started_raw = (
-        c.get("call_started_at") or c.get("callStartedAt")
+        c.get("started_at")
+        or c.get("call_started_at") or c.get("callStartedAt")
         or c.get("Call start time") or c.get("datetime (tz offset incl.)")
     )
     call_started_at = _parse_datetime(started_raw)
 
-    from_number = c.get("from_number") or c.get("from") or c.get("fromNumber") or ""
-    customer_number = c.get("Customer number") or c.get("customer_number") or c.get("to") or ""
+    number = _direct_number(c)
+    started_at = (
+        c.get("started_at")
+        or c.get("call_started_at")
+        or c.get("callStartedAt")
+        or c.get("Call start time")
+        or c.get("datetime (tz offset incl.)")
+    )
+    answered_at = c.get("answered_at")
+    ended_at = c.get("ended_at")
+    from_number = c.get("from_number") or c.get("from") or c.get("fromNumber") or c.get("raw_digits") or ""
+    customer_number = (
+        c.get("Customer number")
+        or c.get("customer_number")
+        or c.get("to")
+        or c.get("raw_digits")
+        or ""
+    )
     phone_e164 = _normalize_phone_e164(from_number or customer_number)
     return {
         "call_id_internal": c.get("call_id_internal") or c.get("Call id (internal)") or c.get("id"),
-        "call_id":          str(c.get("call_id") or c.get("Call id") or c.get("callId") or ""),
+        "call_id":          str(c.get("call_id") or c.get("Call id") or c.get("callId") or c.get("id") or ""),
         "user_id":          _parse_int(
             c.get("user_id")
             or c.get("userId")
-            or (c.get("user") or {}).get("id") if isinstance(c.get("user"), dict) else None
+            or ((c.get("user") or {}).get("id") if isinstance(c.get("user"), dict) else None)
         ),
         "line_id":          (
             _parse_int(c.get("line_id") or c.get("lineId"))
+            or _parse_int(number.get("id"))
             or _LINE_NAME_TO_ID.get(c.get("line") or "")
             or _LINE_NAME_TO_ID.get(c.get("line_name") or "")
+            or _LINE_NAME_TO_ID.get(number.get("name") or "")
         ),
-        "line_name":        c.get("line_name") or c.get("line") or c.get("lineName", ""),
+        "line_name":        c.get("line_name") or c.get("line") or c.get("lineName") or number.get("name", ""),
         "direction":        c.get("direction", ""),
-        "answered":         _normalize_answered(c.get("answered") or c.get("Answered", "No")),
+        "answered":         _normalize_answered(c.get("answered") or c.get("Answered") or bool(answered_at)),
         "missed_call_reason": (
             c.get("missed_call_reason") or c.get("missedCallReason")
             or c.get("missed call reason") or ""
         ),
-        "duration_total":   c.get("duration_total") or c.get("duration (total)") or c.get("durationTotal") or 0,
-        "duration_in_call": c.get("duration_in_call") or c.get("duration (in call)") or c.get("In-call duration") or c.get("durationInCall") or 0,
+        "duration_total":   c.get("duration_total") or c.get("duration (total)") or c.get("durationTotal") or c.get("duration") or _duration_between(started_at, ended_at),
+        "duration_in_call": c.get("duration_in_call") or c.get("duration (in call)") or c.get("In-call duration") or c.get("durationInCall") or _duration_between(answered_at, ended_at),
         "waiting_time":     _parse_wait(
             c.get("waiting_time") or c.get("Waiting time") or c.get("waitingTime") or 0
-        ),
-        "ivr_branch":       c.get("ivr_branch") or c.get("IVR Branch") or c.get("ivrBranch") or "",
-        "ivr_widget":       c.get("ivr_widget") or c.get("IVR Widget") or c.get("ivrWidget") or "",
-        "tags":             c.get("tags") or c.get("Tags") or "",
-        "team":             c.get("team") or c.get("Team") or "",
-        "call_type":        c.get("call_type") or c.get("Call Type") or c.get("callType") or "",
-        "recording_url":    c.get("recording_url") or c.get("Recording") or c.get("recordingUrl") or "",
-        "user_name":        c.get("user_name") or c.get("user") or c.get("userName") or "",
+        ) or _duration_between(started_at, answered_at),
+        "ivr_branch":       c.get("ivr_branch") or c.get("IVR Branch") or c.get("ivrBranch") or _extract_ivr_branches(c),
+        "ivr_widget":       c.get("ivr_widget") or c.get("IVR Widget") or c.get("ivrWidget") or _extract_ivr_widgets(c),
+        "tags":             _join_names(c.get("tags") or c.get("Tags") or ""),
+        "team":             _join_names(c.get("team") or c.get("Team") or c.get("teams") or ""),
+        "call_type":        _direct_call_type(c),
+        "recording_url":    c.get("recording_url") or _direct_recording_url(c),
+        "user_name":        c.get("user_name") or _direct_user_name(c) or c.get("userName") or "",
         "agents_solicited": c.get("agents_solicited") or c.get("agentsSolicited") or "",
         "from_number":      from_number,
         "customer_number":  customer_number,

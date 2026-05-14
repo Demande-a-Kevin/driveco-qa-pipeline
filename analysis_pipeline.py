@@ -1281,6 +1281,10 @@ def run_daily(target_date: datetime):
         calls = call_classifier.classify_all(calls)
         calls = call_fetcher.enrich_with_agent_identity(calls)
         log.info(f"  {len(calls)} appels récupérés")
+        if not calls and not config.ALLOW_EMPTY_DAILY_REPORT:
+            raise RuntimeError(
+                "empty_call_source: 0 appel brut récupéré; publication bloquée pour éviter un reporting vide"
+            )
         persistence.persist_calls(calls)
 
         # Métriques globales sur TOUS les appels (avant filtre UCC)
@@ -1389,10 +1393,10 @@ def run_daily(target_date: datetime):
                 analysis["run_health"]["selected_calls"],
             )
         else:
-            # Règle : un seul post Slack par run daily. Voix du client, risque
-            # client et anomalies sont désormais intégrés directement dans le
-            # Block Kit principal (voir notifier.build_slack_blocks) pour
-            # éviter les doublons et les divergences de counts.
+            # Règle : un seul post Slack par run daily. Les raisons d'appel et
+            # anomalies sont intégrées directement dans le Block Kit principal
+            # (voir notifier.build_slack_blocks) pour éviter les doublons et les
+            # divergences de counts.
             notifier.send_slack_notification(analysis, mode="daily", date=target_date,
                                              calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
             log.info("  ✅ Analyse quotidienne terminée.")

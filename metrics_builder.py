@@ -2,6 +2,7 @@
 metrics_builder.py — Calcule les KPIs à partir des appels classifiés.
 """
 import re
+import unicodedata
 from collections import Counter
 from datetime import datetime
 from statistics import mean, pstdev
@@ -530,6 +531,258 @@ def _iter_voc_evaluations(evaluations: list[dict]) -> list[dict]:
     return rows
 
 
+def _fold_reason_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower()
+    text = re.sub(r"[^\w\s&/-]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+_CALL_REASON_DEFINITIONS = [
+    {
+        "reason_code": "localisation_borne",
+        "label": "Difficulté à trouver la borne",
+        "topic_codes": {"localisation_borne"},
+        "keywords": (
+            "localisation", "localiser", "trouver la borne", "borne introuvable",
+            "adresse", "gps", "geoloc", "parking", "station", "emplacement",
+        ),
+        "default_subreason": "Détail non précisé",
+        "subreasons": [
+            {"label": "Adresse / GPS", "topic_codes": set(), "keywords": ("adresse", "gps", "geoloc", "coordonne", "maps", "itineraire")},
+            {"label": "Signalétique / borne introuvable", "topic_codes": set(), "keywords": ("introuvable", "pas visible", "signal", "panneau", "trouver", "trouve", "localiser")},
+            {"label": "Identification de la borne", "topic_codes": set(), "keywords": ("numero de borne", "id borne", "identifiant", "numero serie", "serie", "borne 321")},
+            {"label": "Confusion sur le site", "topic_codes": set(), "keywords": ("parking", "carrefour", "magasin", "site", "station")},
+        ],
+    },
+    {
+        "reason_code": "interruption_charge",
+        "label": "Interruption de charge",
+        "topic_codes": {"interruption_charge"},
+        "keywords": (
+            "interruption", "charge interrompue", "session interrompue", "charge s arrete",
+            "charge s'arrete", "arret de charge", "stopper", "debrancher",
+        ),
+        "default_subreason": "Cause non précisée",
+        "subreasons": [
+            {"label": "QR code / webapp", "topic_codes": {"qr_code"}, "keywords": ("qr", "scan", "scanner", "webapp", "web app")},
+            {"label": "TPE / carte bancaire", "topic_codes": set(), "keywords": ("tpe", "terminal", "cb", "carte bancaire", "apple pay", "samsung pay", "sans contact")},
+            {"label": "Badge RFID / interopérabilité", "topic_codes": {"carte_rfid", "badge_tiers", "itinerance"}, "keywords": ("badge", "rfid", "interop", "itinerance", "chargemap", "freshmile")},
+            {"label": "Câble bloqué / connecteur", "topic_codes": set(), "keywords": ("cable", "connecteur", "prise", "bloque", "verrouille", "locked")},
+            {"label": "Borne en défaut / redémarrage", "topic_codes": {"borne_hs_terrain"}, "keywords": ("erreur", "defaut", "fault", "hs", "redemarr", "deconnect", "reboot")},
+        ],
+    },
+    {
+        "reason_code": "borne_indisponible",
+        "label": "Borne indisponible",
+        "topic_codes": {"borne_indisponible", "disponibilite_reseau", "borne_occupee"},
+        "keywords": (
+            "borne indisponible", "indisponible", "hors service", "hs", "occupee",
+            "pas disponible", "aucune borne", "maintenance",
+        ),
+        "default_subreason": "Motif non précisé",
+        "subreasons": [
+            {"label": "Hors service / HS", "topic_codes": {"borne_hs_terrain"}, "keywords": ("hors service", "hs", "en panne", "defaut", "fault")},
+            {"label": "Occupée", "topic_codes": {"borne_occupee"}, "keywords": ("occupee", "occupe", "prise par", "vehicule branche")},
+            {"label": "Écran / TPE indisponible", "topic_codes": set(), "keywords": ("ecran", "tactile", "tpe", "terminal")},
+            {"label": "Connecteur / câble indisponible", "topic_codes": set(), "keywords": ("connecteur", "cable", "prise", "ccs", "type 2")},
+            {"label": "Maintenance / intervention", "topic_codes": {"retard_intervention"}, "keywords": ("maintenance", "intervention", "technicien", "reparation")},
+        ],
+    },
+    {
+        "reason_code": "communication_panne",
+        "label": "Communication de panne",
+        "topic_codes": {"communication_panne", "borne_hs_terrain", "sav_physique"},
+        "keywords": (
+            "signaler", "signalement", "declarer", "declaration", "panne",
+            "vol", "vandalisme", "endommage", "maintenance",
+        ),
+        "default_subreason": "Type de panne non précisé",
+        "subreasons": [
+            {"label": "Signalement initial", "topic_codes": set(), "keywords": ("signaler", "signalement", "declarer", "declaration")},
+            {"label": "Suivi ticket / intervention", "topic_codes": {"suivi_ticket", "retard_intervention"}, "keywords": ("ticket", "suivi", "intervention", "technicien", "delai")},
+            {"label": "Vol / vandalisme / câble arraché", "topic_codes": set(), "keywords": ("vol", "vandalisme", "arrache", "cable coupe", "cable vole", "endommage")},
+            {"label": "Panne électrique / réseau", "topic_codes": {"disponibilite_reseau"}, "keywords": ("reseau", "communication", "courant", "electrique", "connexion")},
+        ],
+    },
+    {
+        "reason_code": "app_paiement",
+        "label": "Paiement application",
+        "topic_codes": {"app_paiement", "facturation", "remboursement"},
+        "keywords": (
+            "paiement", "payer", "carte", "preautorisation", "prelevement",
+            "facture", "remboursement", "debit", "caution",
+        ),
+        "default_subreason": "Type de paiement non précisé",
+        "subreasons": [
+            {"label": "QR code / webapp", "topic_codes": {"qr_code"}, "keywords": ("qr", "scan", "scanner", "webapp", "web app")},
+            {"label": "TPE / CB", "topic_codes": set(), "keywords": ("tpe", "terminal", "cb", "carte bancaire", "sans contact", "apple pay", "samsung pay")},
+            {"label": "Préautorisation / débit", "topic_codes": set(), "keywords": ("preautorisation", "autorisation", "empreinte", "prelevement", "debit", "caution", "bloque")},
+            {"label": "Remboursement / facture", "topic_codes": {"remboursement", "facturation"}, "keywords": ("rembours", "factur", "avoir")},
+            {"label": "Moyen de paiement enregistré", "topic_codes": set(), "keywords": ("carte enregistree", "ajouter une carte", "moyen de paiement", "wallet")},
+        ],
+    },
+    {
+        "reason_code": "app_bug",
+        "label": "Bug application",
+        "topic_codes": {"app_bug", "app_connexion", "compte_acces", "mot_de_passe", "bug_bluetooth"},
+        "keywords": (
+            "bug application", "bug appli", "application plante", "app plante",
+            "appli plante", "erreur application", "erreur app", "connexion impossible",
+            "impossible de se connecter", "mot de passe", "bluetooth",
+        ),
+        "default_subreason": "Bug non précisé",
+        "subreasons": [
+            {"label": "Connexion / compte", "topic_codes": {"app_connexion", "compte_acces", "mot_de_passe"}, "keywords": ("connexion", "connecter", "compte", "mot de passe", "login")},
+            {"label": "Paiement", "topic_codes": {"app_paiement"}, "keywords": ("paiement", "carte", "preautorisation", "prelevement")},
+            {"label": "QR code / scan", "topic_codes": {"qr_code"}, "keywords": ("qr", "scan", "scanner")},
+            {"label": "Affichage carte / borne", "topic_codes": {"localisation_borne"}, "keywords": ("carte", "affichage", "borne n apparait", "station n apparait")},
+            {"label": "Bluetooth", "topic_codes": {"bug_bluetooth"}, "keywords": ("bluetooth",)},
+        ],
+    },
+]
+
+
+def _evaluation_topic_codes(evaluation: dict) -> list[str]:
+    voc_extract = evaluation.get("voc_extract") or {}
+    codes = []
+    for topic in voc_extract.get("topics") or []:
+        code = str(topic.get("topic_code") or "").strip()
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _evaluation_reason_text(evaluation: dict) -> str:
+    fragments = [
+        evaluation.get("customer_call_reason"),
+        evaluation.get("kb_article_applicable"),
+    ]
+    for item in evaluation.get("errors") or []:
+        if isinstance(item, dict):
+            fragments.extend([item.get("text"), item.get("description"), item.get("citation")])
+        else:
+            fragments.append(item)
+    for item in evaluation.get("alerts") or []:
+        if isinstance(item, dict):
+            fragments.append(item.get("message"))
+        else:
+            fragments.append(item)
+    voc_extract = evaluation.get("voc_extract") or {}
+    for topic in voc_extract.get("topics") or []:
+        fragments.extend([topic.get("topic_code"), topic.get("product_area"), topic.get("quote")])
+    for quote in voc_extract.get("verbatim_quotes") or []:
+        fragments.extend([quote.get("topic_code"), quote.get("quote")])
+    fragments.extend(voc_extract.get("unmet_needs") or [])
+    fragments.extend(voc_extract.get("product_ideas") or [])
+    return _fold_reason_text(" ".join(str(item) for item in fragments if item))
+
+
+def _call_reason_matches(definition: dict, topic_codes: set[str], text: str) -> bool:
+    return bool(topic_codes & set(definition.get("topic_codes") or set())) or _contains_any(
+        text, tuple(definition.get("keywords") or ())
+    )
+
+
+def _call_reason_subreason(definition: dict, topic_codes: set[str], text: str) -> str:
+    for subreason in definition.get("subreasons") or []:
+        subreason_codes = set(subreason.get("topic_codes") or set())
+        if topic_codes & subreason_codes:
+            return subreason["label"]
+        if _contains_any(text, tuple(subreason.get("keywords") or ())):
+            return subreason["label"]
+    return definition.get("default_subreason") or "Détail non précisé"
+
+
+def _fallback_call_reason_definition(evaluation: dict, topic_codes: list[str], labels: dict[str, str]) -> dict | None:
+    if topic_codes:
+        code = topic_codes[0]
+        return {
+            "reason_code": code,
+            "label": labels.get(code, code.replace("_", " ").title()),
+            "topic_codes": {code},
+            "keywords": (),
+            "default_subreason": "Non détaillé",
+            "subreasons": [],
+        }
+    reason = re.sub(r"\s+", " ", str(evaluation.get("customer_call_reason") or "").strip())
+    if not reason:
+        return None
+    code = _fold_reason_text(reason).replace(" ", "_")[:80] or "autre"
+    return {
+        "reason_code": code,
+        "label": reason[:80],
+        "topic_codes": set(),
+        "keywords": (),
+        "default_subreason": "Non détaillé",
+        "subreasons": [],
+    }
+
+
+def aggregate_call_reasons(evaluations: list[dict], limit: int = 8) -> list[dict]:
+    """Agrège les raisons d'appel avec des sous-motifs actionnables."""
+    labels = voc_taxonomy.axis_label_map("topics")
+    buckets: dict[str, dict] = {}
+    for index, evaluation in enumerate(evaluations or []):
+        if not isinstance(evaluation, dict):
+            continue
+        call_id = str(evaluation.get("call_id") or evaluation.get("call_id_internal") or f"row:{index}").strip()
+        topic_codes_ordered = _evaluation_topic_codes(evaluation)
+        topic_codes = set(topic_codes_ordered)
+        text = _evaluation_reason_text(evaluation)
+        definitions = [
+            definition for definition in _CALL_REASON_DEFINITIONS
+            if _call_reason_matches(definition, topic_codes, text)
+        ]
+        if not definitions:
+            fallback = _fallback_call_reason_definition(evaluation, topic_codes_ordered, labels)
+            definitions = [fallback] if fallback else []
+
+        for definition in definitions:
+            key = definition["reason_code"]
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "reason_code": key,
+                    "label": definition["label"],
+                    "count": 0,
+                    "example_call_ids": [],
+                    "_call_ids": set(),
+                    "_subreason_counts": Counter(),
+                },
+            )
+            if call_id in bucket["_call_ids"]:
+                continue
+            bucket["_call_ids"].add(call_id)
+            bucket["count"] += 1
+            if call_id and len(bucket["example_call_ids"]) < 5:
+                bucket["example_call_ids"].append(call_id)
+            subreason = _call_reason_subreason(definition, topic_codes, text)
+            if subreason:
+                bucket["_subreason_counts"][subreason] += 1
+
+    output = []
+    for bucket in buckets.values():
+        subreasons = [
+            {"label": label, "count": count}
+            for label, count in bucket["_subreason_counts"].most_common(4)
+        ]
+        output.append({
+            "reason_code": bucket["reason_code"],
+            "label": bucket["label"],
+            "count": bucket["count"],
+            "subreasons": subreasons,
+            "example_call_ids": bucket["example_call_ids"],
+        })
+    output.sort(key=lambda item: (-int(item.get("count") or 0), item.get("label") or ""))
+    return output[:limit]
+
+
 def aggregate_voc_topics(evaluations: list[dict], limit: int = 8) -> list[dict]:
     counts = Counter()
     sentiment_scores: dict[str, list[int]] = {}
@@ -708,6 +961,7 @@ def build_voc_summary(evaluations: list[dict]) -> dict:
     ]
     weak_signals.sort(key=lambda item: (-item["count"], item["topic_code"]))
     return {
+        "call_reasons": aggregate_call_reasons(evaluations),
         "top_topics": aggregate_voc_topics(evaluations),
         "entity_sentiment": aggregate_voc_entity_sentiment(evaluations),
         "churn_risk_calls": aggregate_voc_churn_risks(evaluations),

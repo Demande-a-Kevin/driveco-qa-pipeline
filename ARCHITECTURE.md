@@ -168,8 +168,8 @@ Contenu du post :
 5. Éligibles QA / Analysés / Transcripts
 6. Routage IVR (répartition touches)
 7. Pics d'appels (top 3 fenêtres horaires)
-8. Voix du client (top topics, labels humains, max 6)
-9. Risque client (élevé N / modéré N)
+8. Raisons d'appel (catégories + sous-motifs actionnables, max 6)
+9. Opportunités / bonnes pratiques / concurrents si détectés
 10. Alertes (appels problématiques avec liens Aircall directs)
 11. Clients frustrés / repeat callers (scope Assistance uniquement)
 

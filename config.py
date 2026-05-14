@@ -38,6 +38,26 @@ def _optional_int_env(name: str, default: int | None = None) -> int | None:
         return default
     return value if value > 0 else None
 
+
+def _float_env(name: str, default: float) -> float:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _int_set_env(name: str, default: str) -> set[int]:
+    out: set[int] = set()
+    for item in _split_csv_env(name, default):
+        try:
+            out.add(int(item))
+        except ValueError:
+            continue
+    return out
+
 # ── Cloudflare ──────────────────────────────────────────────────────────────
 # Les IDs Cloudflare sont des métadonnées internes. On évite de les hardcoder
 # pour forcer une config explicite par environnement.
@@ -54,6 +74,20 @@ AIRCALL_ASSISTANCE_LINE_ID  = int(os.getenv("AIRCALL_ASSISTANCE_LINE_ID", "78517
 AIRCALL_MAINTENANCE_LINE_ID = int(os.getenv("AIRCALL_MAINTENANCE_LINE_ID", "785175"))
 AIRCALL_UCC_TRANSFER_LINE_ID = int(os.getenv("AIRCALL_UCC_TRANSFER_LINE_ID", "1214611"))
 AIRCALL_BASE_URL    = "https://api.aircall.io/v1"
+AIRCALL_CALL_HISTORY_LINE_IDS = _int_set_env(
+    "AIRCALL_CALL_HISTORY_LINE_IDS",
+    ",".join(
+        str(line_id)
+        for line_id in (
+            AIRCALL_ASSISTANCE_LINE_ID,
+            AIRCALL_MAINTENANCE_LINE_ID,
+            AIRCALL_UCC_TRANSFER_LINE_ID,
+            1075934,  # Belgique
+            1075935,  # Italie
+            1075937,  # Espagne
+        )
+    ),
+)
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
@@ -164,7 +198,7 @@ ANALYSIS_MIN_DATE = date(2026, 3, 1)
 
 # ── Couverture d'analyse ─────────────────────────────────────────────────────
 # % d'appels QA soumis à l'analyse (pré-screening Ollama puis LLM)
-ANALYSIS_COVERAGE_PCT   = 0.75   # 75% des appels analysables
+ANALYSIS_COVERAGE_PCT   = min(1.0, max(0.0, _float_env("ANALYSIS_COVERAGE_PCT", 1.0)))
 ANALYSIS_BATCH_SIZE     = 10     # Appels par batch (metadata-only ou mixte)
 ANALYSIS_BATCH_SIZE_TX  = 5      # Appels par batch quand transcript inclus
 TOP_PROBLEMATIC_CALLS   = 5      # Top appels problématiques isolés dans le rapport
@@ -209,6 +243,7 @@ LLM_CACHE_DIR       = _resolve_path_env(
 )
 DISABLE_SLACK_NOTIFICATIONS = os.getenv("DISABLE_SLACK_NOTIFICATIONS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DISABLE_EXTERNAL_PUBLISH = os.getenv("DISABLE_EXTERNAL_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_EMPTY_DAILY_REPORT = os.getenv("ALLOW_EMPTY_DAILY_REPORT", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Obsidian publication ────────────────────────────────────────────────────
 # Dépose les rapports Markdown (daily/weekly) dans un vault Obsidian local

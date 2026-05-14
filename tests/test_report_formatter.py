@@ -40,6 +40,38 @@ class ReportFormatterTest(unittest.TestCase):
         report = report_formatter.format_daily_report(datetime(2026, 4, 16), analysis["kpis"], analysis)
         self.assertIn("💡 Opportunités détectées", report)
 
+    def test_daily_report_uses_call_reasons_and_assets_aircall_links(self):
+        analysis = {
+            "kpis": {"calls_presented": 10, "pickup_rate_pct": 80, "overflow_rate_pct": 5, "abandon_rate_pct": 10, "kb_compliance_rate_pct": 70, "avg_duration_seconds": 120, "avg_wait_time_seconds": 20},
+            "scores": {"ucc_quality_score": 8.2, "driveco_care_score": 7.8, "ucc_score_justification": "ok", "driveco_score_justification": "ok"},
+            "top_problematic_calls": [
+                {"call_id": "3767111602", "agent": "N/A", "duration_seconds": 120, "kb_compliance": "partiel", "errors": ["Paiement TPE refusé"]}
+            ],
+            "kb_gaps": {"missing": [], "incomplete": [], "to_revise": []},
+            "voc_summary": {
+                "call_reasons": [
+                    {
+                        "label": "Paiement application",
+                        "count": 3,
+                        "subreasons": [{"label": "TPE / CB", "count": 2}],
+                    }
+                ],
+                "top_topics": [],
+                "weak_signals": [],
+                "verbatims": [],
+                "competitors": [],
+                "opportunities": [],
+                "best_practices": [],
+            },
+            "run_health": {"degraded": False},
+        }
+
+        report = report_formatter.format_daily_report(datetime(2026, 4, 16), analysis["kpis"], analysis)
+        self.assertIn("## Raisons d'appel", report)
+        self.assertIn("Paiement application — 3 appel(s) (TPE / CB: 2)", report)
+        self.assertIn("https://assets.aircall.io/calls/3767111602/recording/info", report)
+        self.assertNotIn("https://asset.aircall.io/calls/3767111602/recording/info", report)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,43 @@ class SlackDedupFlagsTest(unittest.TestCase):
             notifier.send_voc_alerts(analysis, mode="daily", date=self.date)
         self.assertFalse(notifier._slack_already_sent("voc", "daily", self.date))
 
+    def test_aircall_links_use_assets_domain(self):
+        link = notifier._aircall_link("3767111602")
+        self.assertIn("https://assets.aircall.io/calls/3767111602/recording/info", link)
+        self.assertNotIn("https://asset.aircall.io/calls/3767111602/recording/info", link)
+
+    def test_daily_slack_uses_call_reasons_without_churn_risk_block(self):
+        analysis = {
+            "kpis": {"calls_presented": 1, "calls_answered": 1, "answerable_calls": 1},
+            "scores": {},
+            "top_problematic_calls": [],
+            "kb_gaps": {"missing": [], "incomplete": [], "to_revise": []},
+            "voc_summary": {
+                "call_reasons": [
+                    {
+                        "label": "Interruption de charge",
+                        "count": 2,
+                        "subreasons": [{"label": "TPE / CB", "count": 1}],
+                    }
+                ],
+                "top_topics": [{"label": "Voix du client legacy", "count": 9}],
+                "churn_risk_typology": {"eleve": 6, "modere": 45, "total": 51},
+            },
+        }
+
+        blocks = notifier.build_slack_blocks(analysis, "daily", self.date, calls=[])
+        text = "\n".join(
+            block.get("text", {}).get("text", "")
+            for block in blocks
+            if isinstance(block.get("text"), dict)
+        )
+
+        self.assertIn("Raisons d’appel", text)
+        self.assertIn("Interruption de charge", text)
+        self.assertIn("TPE / CB: 1", text)
+        self.assertNotIn("Voix du client", text)
+        self.assertNotIn("Risque client détecté", text)
+
 
 if __name__ == "__main__":
     unittest.main()
