@@ -22,7 +22,7 @@ def main() -> int:
     args = ap.parse_args()
 
     channels = {c.strip() for c in args.channels.split(",") if c.strip()}
-    valid = {"notion", "slack", "gdrive"}
+    valid = {"notion", "slack", "gdrive", "obsidian"}
     invalid = channels - valid
     if invalid:
         print(f"Unknown channels: {invalid}", file=sys.stderr)
@@ -67,6 +67,16 @@ def main() -> int:
                 log.warning("gdrive_uploader.republish_run absent — GDrive republish skip")
         except Exception as exc:
             errors.append(f"gdrive: {exc}")
+
+    if "obsidian" in channels:
+        try:
+            import obsidian_reporter  # type: ignore
+            if hasattr(obsidian_reporter, "republish_run"):
+                obsidian_reporter.republish_run(run)
+            else:
+                log.warning("obsidian_reporter.republish_run absent — Obsidian republish skip")
+        except Exception as exc:
+            errors.append(f"obsidian: {exc}")
 
     if errors:
         for e in errors:

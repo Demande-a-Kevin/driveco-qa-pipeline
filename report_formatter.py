@@ -568,3 +568,55 @@ def format_weekly_report(start: datetime, end: datetime, metrics: dict, analysis
         lines.append("")
 
     return "\n".join(lines)
+
+
+def render_run(run: dict) -> str:
+    """Rendu Markdown synthétique d'une row `llm_runs`.
+
+    Sert pour la republication (Obsidian, etc.) lorsque metrics/analysis
+    ne sont pas reconstruits. Si le payload `raw` contient des sous-structures
+    riches (run_health, batch_stats…), elles sont exposées en bloc YAML/JSON.
+    """
+    if not run:
+        return "# Run inconnu\n"
+    run_id = run.get("id") or "unknown"
+    mode = run.get("mode") or "misc"
+    started = run.get("started_at") or ""
+    ended = run.get("ended_at") or ""
+    status = run.get("status") or ""
+    calls = run.get("calls_count") or 0
+    errors = run.get("errors_count") or 0
+    tokens = run.get("tokens_total") or 0
+    model = run.get("model") or ""
+
+    lines = [
+        f"# Run {mode} — {str(started)[:10]}",
+        "",
+        f"- **Run ID** : `{run_id}`",
+        f"- **Mode** : {mode}",
+        f"- **Statut** : {status}",
+        f"- **Modèle** : {model}",
+        f"- **Démarré** : {started}",
+        f"- **Terminé** : {ended}",
+        f"- **Appels analysés** : {calls}",
+        f"- **Erreurs** : {errors}",
+        f"- **Tokens** : {tokens}",
+        "",
+    ]
+
+    raw = run.get("raw") or {}
+    run_health = raw.get("run_health") if isinstance(raw, dict) else None
+    if isinstance(run_health, dict) and run_health:
+        lines.append("## Run health")
+        for k, v in run_health.items():
+            lines.append(f"- **{k}** : {v}")
+        lines.append("")
+
+    batch_stats = raw.get("batch_stats") if isinstance(raw, dict) else None
+    if isinstance(batch_stats, dict) and batch_stats:
+        lines.append("## Batch stats")
+        for k, v in batch_stats.items():
+            lines.append(f"- **{k}** : {v}")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
