@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Optional
 
 import rubric
 import voc_taxonomy
@@ -16,6 +17,9 @@ _VOC_EXAMPLES_DIR = _EXAMPLES_DIR / "voc"
 # Si None → fallback sur system_prompt.txt (rétrocompat tests / usages directs).
 _EFFECTIVE_BASE_PROMPT: str | None = None
 
+# B-γ : focus note one-shot injecté par analysis_pipeline au boot.
+_EFFECTIVE_FOCUS_NOTE: Optional[str] = None
+
 
 def set_effective_base_prompt(text: str | None) -> None:
     """Override le prompt système baseline (utilisé par runtime_config).
@@ -24,6 +28,19 @@ def set_effective_base_prompt(text: str | None) -> None:
     """
     global _EFFECTIVE_BASE_PROMPT
     _EFFECTIVE_BASE_PROMPT = text
+
+
+def set_effective_focus_note(note: Optional[str]) -> None:
+    """B-γ : focus note one-shot injecté par analysis_pipeline au boot.
+
+    None ou '' = pas d'override (fallback comportement existant).
+    """
+    global _EFFECTIVE_FOCUS_NOTE
+    _EFFECTIVE_FOCUS_NOTE = note.strip() if note else None
+
+
+def get_active_focus_note() -> Optional[str]:
+    return _EFFECTIVE_FOCUS_NOTE
 
 
 def load_base_system_prompt() -> str:

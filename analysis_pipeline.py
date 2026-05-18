@@ -117,6 +117,9 @@ log.info(
 
 # Propager le prompt et la rubric effectifs aux helpers (qa_prompting, rubric)
 qa_prompting.set_effective_base_prompt(runtime_cfg.effective_prompt)
+# B-γ : propager focus_note + phone_line_ids
+qa_prompting.set_effective_focus_note(runtime_cfg.effective_focus_note)
+call_fetcher.set_effective_phone_line_ids(runtime_cfg.effective_phone_line_ids or None)
 if runtime_cfg.rubric_criteria is not None and runtime_cfg.rubric_version_id:
     rubric_module.set_effective_rubric(
         {

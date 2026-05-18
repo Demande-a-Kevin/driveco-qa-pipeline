@@ -4,6 +4,7 @@ Fallback : API Aircall directe si le worker est indisponible.
 """
 from datetime import datetime
 from hashlib import sha256
+from typing import Optional
 import logging
 import time
 import requests
@@ -15,6 +16,29 @@ _AIRCALL_API_SESSION = requests.Session()
 _CALL_DETAILS_CACHE: dict[str, dict | None] = {}
 _NUMBER_CALLS_CACHE: dict[str, list[dict]] = {}
 _TRANSCRIPT_CACHE: dict[str, str | None] = {}
+
+# B-γ : override one-shot des phone lines à tracker (depuis runtime_config).
+_EFFECTIVE_PHONE_LINE_IDS: Optional[list[str]] = None
+
+
+def set_effective_phone_line_ids(ids: Optional[list[str]]) -> None:
+    """B-γ : override one-shot des phone lines. None ou [] = fallback config.AIRCALL_CALL_HISTORY_LINE_IDS."""
+    global _EFFECTIVE_PHONE_LINE_IDS
+    _EFFECTIVE_PHONE_LINE_IDS = ids if ids else None
+
+
+def get_active_phone_line_ids() -> list[int]:
+    """one-shot > config.AIRCALL_CALL_HISTORY_LINE_IDS. Retour : liste d'ids int."""
+    if _EFFECTIVE_PHONE_LINE_IDS is not None:
+        out: list[int] = []
+        for raw in _EFFECTIVE_PHONE_LINE_IDS:
+            try:
+                out.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        return out
+    fallback = getattr(config, "AIRCALL_CALL_HISTORY_LINE_IDS", None) or set()
+    return [int(x) for x in fallback]
 
 # Fuseau horaire Paris pour calcul des timestamps minuit/23h59
 try:
@@ -76,7 +100,7 @@ def fetch_calls_range_aircall_direct(ts_from: int, ts_to: int) -> list[dict]:
         log.warning("[call_fetcher] fallback Aircall direct impossible: credentials absents")
         return []
 
-    tracked_lines = set(getattr(config, "AIRCALL_CALL_HISTORY_LINE_IDS", set()) or set())
+    tracked_lines = set(get_active_phone_line_ids())
     calls: list[dict] = []
     per_page = 50
     for page in range(1, 101):
