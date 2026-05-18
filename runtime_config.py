@@ -7,6 +7,7 @@ et merge avec les fichiers `system_prompt.txt` / `rubric.yaml` du runtime.
 from __future__ import annotations
 import hashlib
 import logging
+import os
 import yaml
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +41,26 @@ class RuntimeConfig:
     pipeline_config_payload: Optional[dict] = None
     degraded: bool = False
     warnings: list[str] = field(default_factory=list)
+    one_shot_phone_line_ids: Optional[list[str]] = None
+    one_shot_focus_note: Optional[str] = None
+
+    @property
+    def effective_phone_line_ids(self) -> list[str]:
+        """One-shot override > pipeline_config.phone_line_ids > [] (fallback)."""
+        if self.one_shot_phone_line_ids is not None:
+            return self.one_shot_phone_line_ids
+        if self.pipeline_config_payload:
+            return self.pipeline_config_payload.get("phone_line_ids", []) or []
+        return []
+
+    @property
+    def effective_focus_note(self) -> Optional[str]:
+        """One-shot override > pipeline_config.focus_note > None."""
+        if self.one_shot_focus_note is not None:
+            return self.one_shot_focus_note
+        if self.pipeline_config_payload:
+            return self.pipeline_config_payload.get("focus_note")
+        return None
 
 
 def load_runtime_config(
@@ -95,5 +116,35 @@ def load_runtime_config(
                 cfg.warnings.append(msg)
                 logger.warning(msg)
         # sinon: expiré → on retombe sur baseline (déjà initialisé)
+
+    # B-γ : overrides one-shot depuis llm_runs.params si run manuel via cockpit
+    run_id = os.environ.get("PIPELINE_LLM_RUN_ID")
+    if run_id and hasattr(db, "fetch_llm_run"):
+        try:
+            run = db.fetch_llm_run(run_id)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "runtime_config: fetch_llm_run(%s) failed (%s) — continuing without one-shot overrides",
+                run_id, exc,
+            )
+            run = None
+        if run and isinstance(run.get("params"), dict):
+            params = run["params"]
+
+            # 1. Phone lines override (replace pipeline_config.phone_line_ids)
+            plis = params.get("phone_line_ids_override")
+            if isinstance(plis, list) and all(isinstance(x, str) for x in plis):
+                cfg.one_shot_phone_line_ids = plis
+
+            # 2. Focus note override (replace pipeline_config.focus_note)
+            fn = params.get("focus_note_override")
+            if isinstance(fn, str) and fn.strip():
+                cfg.one_shot_focus_note = fn.strip()
+
+            # 3. Prompt override one-shot (replace effective_prompt)
+            pot = params.get("prompt_override_text")
+            if isinstance(pot, str) and len(pot) >= 50:
+                cfg.effective_prompt = pot
+                cfg.prompt_source = "override_one_shot"
 
     return cfg

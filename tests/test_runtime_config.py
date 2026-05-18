@@ -119,3 +119,62 @@ def test_active_rubric_replaces_yaml(tmp_path):
     assert cfg.rubric_version_id == "rub-1"
     assert cfg.rubric_version_label == "db:v7"
     assert cfg.rubric_criteria == [{"code": "tone", "weight": 0.3}]
+
+
+def test_one_shot_overrides_take_priority_over_pipeline_config(tmp_path, monkeypatch):
+    """Vérifie qu'un run manuel avec overrides dans llm_runs.params l'emporte sur pipeline_config."""
+    prompt_file = tmp_path / "system_prompt.txt"
+    prompt_file.write_text(PROMPT_BASELINE)
+    rubric_file = tmp_path / "rubric.yaml"
+    rubric_file.write_text("criteria: []")
+
+    db = MagicMock()
+    db.fetch_active_pipeline_config.return_value = {
+        "id": "pc-1",
+        "phone_line_ids": ["785174"],
+        "focus_note": "Focus depuis pipeline_config",
+    }
+    db.fetch_active_rubric.return_value = None
+    db.fetch_active_prompt_override.return_value = None
+    long_prompt = "ONE-SHOT PROMPT " * 5  # > 50 chars
+    db.fetch_llm_run.return_value = {
+        "id": "run-X",
+        "params": {
+            "phone_line_ids_override": ["1075934"],
+            "focus_note_override": "Focus one-shot",
+            "prompt_override_text": long_prompt,
+        },
+    }
+    monkeypatch.setenv("PIPELINE_LLM_RUN_ID", "run-X")
+
+    cfg = load_runtime_config(prompt_file, rubric_file, db)
+
+    assert cfg.effective_phone_line_ids == ["1075934"]  # override wins
+    assert cfg.effective_focus_note == "Focus one-shot"
+    assert cfg.prompt_source == "override_one_shot"
+    assert cfg.effective_prompt == long_prompt
+
+
+def test_no_one_shot_falls_back_to_pipeline_config(tmp_path, monkeypatch):
+    """Quand llm_runs.params est vide, fallback sur pipeline_config."""
+    prompt_file = tmp_path / "system_prompt.txt"
+    prompt_file.write_text(PROMPT_BASELINE)
+    rubric_file = tmp_path / "rubric.yaml"
+    rubric_file.write_text("criteria: []")
+
+    db = MagicMock()
+    db.fetch_active_pipeline_config.return_value = {
+        "id": "pc-1",
+        "phone_line_ids": ["785174", "1214611"],
+        "focus_note": "Focus pipeline_config",
+    }
+    db.fetch_active_rubric.return_value = None
+    db.fetch_active_prompt_override.return_value = None
+    db.fetch_llm_run.return_value = {"id": "run-Y", "params": {}}
+    monkeypatch.setenv("PIPELINE_LLM_RUN_ID", "run-Y")
+
+    cfg = load_runtime_config(prompt_file, rubric_file, db)
+
+    assert cfg.effective_phone_line_ids == ["785174", "1214611"]
+    assert cfg.effective_focus_note == "Focus pipeline_config"
+    assert cfg.prompt_source == "file"  # baseline, no override
