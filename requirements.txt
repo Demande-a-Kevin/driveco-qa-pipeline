@@ -11,3 +11,5 @@ pytz>=2024.1
 supabase>=2.15.3
 json-repair>=0.25
 RapidFuzz>=3.10.1
+numpy>=1.26
+scipy>=1.13

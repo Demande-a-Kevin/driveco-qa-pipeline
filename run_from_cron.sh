@@ -33,6 +33,9 @@ case "$MODE" in
   benchmark)
     LOG_FILE="$LOG_DIR/cron_benchmark.log"
     ;;
+  kb_cluster)
+    LOG_FILE="$LOG_DIR/cron_kb_cluster.log"
+    ;;
   *)
     echo "Mode invalide: $MODE" >&2
     exit 1

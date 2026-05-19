@@ -14,12 +14,14 @@ DAILY_LABEL="com.kev1n.driveco.qa.daily"
 WATCHDOG_LABEL="com.kev1n.driveco.qa.daily-watchdog"
 WEEKLY_LABEL="com.kev1n.driveco.qa.weekly"
 RELIABILITY_LABEL="com.kev1n.driveco.qa.reliability"
+KB_CLUSTER_LABEL="com.kev1n.driveco.qa.kb-cluster"
 
 BENCH_PLIST="$LAUNCH_AGENTS_DIR/${BENCH_LABEL}.plist"
 DAILY_PLIST="$LAUNCH_AGENTS_DIR/${DAILY_LABEL}.plist"
 WATCHDOG_PLIST="$LAUNCH_AGENTS_DIR/${WATCHDOG_LABEL}.plist"
 WEEKLY_PLIST="$LAUNCH_AGENTS_DIR/${WEEKLY_LABEL}.plist"
 RELIABILITY_PLIST="$LAUNCH_AGENTS_DIR/${RELIABILITY_LABEL}.plist"
+KB_CLUSTER_PLIST="$LAUNCH_AGENTS_DIR/${KB_CLUSTER_LABEL}.plist"
 
 BENCH_HOUR="${BENCH_HOUR:-1}"
 BENCH_MINUTE="${BENCH_MINUTE:-30}"
@@ -33,6 +35,8 @@ WEEKLY_WEEKDAY="${WEEKLY_WEEKDAY:-1}"
 RELIABILITY_HOUR="${RELIABILITY_HOUR:-4}"
 RELIABILITY_MINUTE="${RELIABILITY_MINUTE:-0}"
 RELIABILITY_WEEKDAY="${RELIABILITY_WEEKDAY:-1}"
+KB_CLUSTER_HOUR="${KB_CLUSTER_HOUR:-3}"
+KB_CLUSTER_MINUTE="${KB_CLUSTER_MINUTE:-30}"
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
 chmod +x "$SYNC_SCRIPT"
@@ -207,7 +211,40 @@ cat > "$RELIABILITY_PLIST" <<EOF
 </plist>
 EOF
 
-for label in "$BENCH_LABEL" "$DAILY_LABEL" "$WATCHDOG_LABEL" "$WEEKLY_LABEL" "$RELIABILITY_LABEL"; do
+cat > "$KB_CLUSTER_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${KB_CLUSTER_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${RUNNER}</string>
+    <string>kb_cluster</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>${KB_CLUSTER_HOUR}</integer>
+    <key>Minute</key>
+    <integer>${KB_CLUSTER_MINUTE}</integer>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>${RUNTIME_DIR}</string>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/launchd_kb_cluster.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/launchd_kb_cluster.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>AbandonProcessGroup</key>
+  <true/>
+</dict>
+</plist>
+EOF
+
+for label in "$BENCH_LABEL" "$DAILY_LABEL" "$WATCHDOG_LABEL" "$WEEKLY_LABEL" "$RELIABILITY_LABEL" "$KB_CLUSTER_LABEL"; do
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
 done
 
@@ -216,6 +253,7 @@ launchctl bootstrap "gui/$(id -u)" "$DAILY_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$WATCHDOG_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$WEEKLY_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$RELIABILITY_PLIST"
+launchctl bootstrap "gui/$(id -u)" "$KB_CLUSTER_PLIST"
 
 echo "LaunchAgents installés :"
 echo "  $BENCH_PLIST"
@@ -223,6 +261,7 @@ echo "  $DAILY_PLIST"
 echo "  $WATCHDOG_PLIST"
 echo "  $WEEKLY_PLIST"
 echo "  $RELIABILITY_PLIST"
+echo "  $KB_CLUSTER_PLIST"
 echo "Runtime launchd :"
 echo "  $RUNTIME_DIR"
 echo ""
@@ -232,3 +271,4 @@ echo "  daily     : ${DAILY_HOUR}:$(printf '%02d' "$DAILY_MINUTE")"
 echo "  watchdog  : ${WATCHDOG_HOUR}:$(printf '%02d' "$WATCHDOG_MINUTE")"
 echo "  weekly    : weekday ${WEEKLY_WEEKDAY} ${WEEKLY_HOUR}:$(printf '%02d' "$WEEKLY_MINUTE")"
 echo "  reliability : weekday ${RELIABILITY_WEEKDAY} ${RELIABILITY_HOUR}:$(printf '%02d' "$RELIABILITY_MINUTE")"
+echo "  kb_cluster : ${KB_CLUSTER_HOUR}:$(printf '%02d' "$KB_CLUSTER_MINUTE")"

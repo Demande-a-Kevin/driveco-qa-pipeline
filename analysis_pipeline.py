@@ -1734,13 +1734,17 @@ def run_test():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline QA Driveco")
-    parser.add_argument("--mode", choices=["daily", "weekly", "reliability", "test"], default="test")
+    parser.add_argument("--mode", choices=["daily", "weekly", "reliability", "test", "kb_cluster"], default="test")
     parser.add_argument("--date", default=None,
                         help="Date cible YYYY-MM-DD (défaut : hier pour daily, lundi dernier pour weekly)")
     args = parser.parse_args()
 
     if args.mode == "test":
         run_test()
+    elif args.mode == "kb_cluster":
+        import kb_clusterer
+        metrics = kb_clusterer.run_clustering()
+        log.info("kb_clusterer done: %s", metrics)
     else:
         if args.date:
             target = datetime.strptime(args.date, "%Y-%m-%d")
