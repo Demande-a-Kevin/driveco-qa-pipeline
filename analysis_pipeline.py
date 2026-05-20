@@ -1371,7 +1371,11 @@ def run_daily(target_date: datetime):
         )
 
         save_analysis_to_d1(analysis.get("call_evaluations", []))
-        persistence.persist_evaluations(calls_to_analyze, analysis.get("call_evaluations", []))
+        persistence.persist_evaluations(
+            calls_to_analyze,
+            analysis.get("call_evaluations", []),
+            llm_run_id=run_record.get("id"),
+        )
         shadow_rows = _run_shadow_evaluations(target_date, calls_to_analyze, analysis, kb_summary)
         if shadow_rows:
             persistence.save_shadow_runs(shadow_rows)

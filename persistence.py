@@ -171,6 +171,18 @@ def _model_version(model_name: str | None) -> str | None:
     return text
 
 
+def _execute_insert(table: str, payload: dict | list[dict]) -> bool:
+    supa = client()
+    if supa is None:
+        return False
+    try:
+        supa.table(table).insert(payload).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[persistence] insert %s échoué: %s", table, exc)
+        return False
+
+
 def _execute_upsert(table: str, payload: dict | list[dict], on_conflict: str) -> bool:
     supa = client()
     if supa is None:
@@ -370,7 +382,50 @@ def _issue_rows(evaluation_id: str, evaluation: dict) -> list[dict]:
     return rows
 
 
-def save_evaluation(call: dict, evaluation: dict) -> str | None:
+def unpack_unanswered_questions(
+    evaluation: dict,
+    call_id: str,
+    llm_run_id: str | None,
+    raised_at: str | None,
+    insert_fn=None,
+) -> int:
+    """F-3 Group B : déballe `unanswered_questions` (raw + top-level) dans la table dédiée.
+
+    `insert_fn(rows: list[dict]) -> bool` est injectable pour les tests. Par défaut
+    on passe par `_execute_insert("call_unanswered_questions", rows)`.
+
+    Retourne le nombre de rows effectivement insérées (0 si liste vide ou si insert KO).
+    """
+    if not call_id:
+        return 0
+    questions = evaluation.get("unanswered_questions")
+    if not questions and isinstance(evaluation.get("raw"), dict):
+        questions = evaluation["raw"].get("unanswered_questions")
+    if not questions:
+        return 0
+    rows: list[dict] = []
+    for raw_q in questions:
+        q = str(raw_q or "").strip()
+        if not q:
+            continue
+        q_hash = sha256(q.lower().strip().encode("utf-8")).hexdigest()
+        rows.append(
+            {
+                "call_id": call_id,
+                "question_text": q,
+                "question_hash": q_hash,
+                "raised_at": raised_at or datetime.now(timezone.utc).isoformat(),
+                "llm_run_id": llm_run_id,
+            }
+        )
+    if not rows:
+        return 0
+    fn = insert_fn or (lambda payload: _execute_insert("call_unanswered_questions", payload))
+    ok = fn(rows)
+    return len(rows) if ok else 0
+
+
+def save_evaluation(call: dict, evaluation: dict, llm_run_id: str | None = None) -> str | None:
     call_id = upsert_call(call)
     if not call_id:
         return None
@@ -401,6 +456,14 @@ def save_evaluation(call: dict, evaluation: dict) -> str | None:
     if issue_rows:
         _execute_upsert("issues", issue_rows, on_conflict="id")
     save_voc_extract(evaluation_id, call, evaluation.get("voc_extract"))
+    # F-3 Group B : déballer les questions sans réponse vers call_unanswered_questions
+    try:
+        raised_at = _iso_from_unix(call.get("call_started_at")) or datetime.now(timezone.utc).isoformat()
+        inserted = unpack_unanswered_questions(evaluation, call_id, llm_run_id, raised_at)
+        if inserted:
+            log.info("[persistence] call_unanswered_questions: %d row(s) pour call_id=%s", inserted, call_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[persistence] unpack_unanswered_questions KO call_id=%s: %s", call_id, exc)
     return evaluation_id
 
 
@@ -819,7 +882,7 @@ def persist_transcripts(calls: list[dict]) -> int:
     return saved
 
 
-def persist_evaluations(source_calls: list[dict], evaluations: list[dict]) -> int:
+def persist_evaluations(source_calls: list[dict], evaluations: list[dict], llm_run_id: str | None = None) -> int:
     call_index = {}
     for call in source_calls or []:
         call_id = canonical_call_id(call)
@@ -829,7 +892,7 @@ def persist_evaluations(source_calls: list[dict], evaluations: list[dict]) -> in
     for evaluation in evaluations or []:
         call_id = str(evaluation.get("call_id") or "").strip()
         source_call = call_index.get(call_id)
-        if source_call and save_evaluation(source_call, evaluation):
+        if source_call and save_evaluation(source_call, evaluation, llm_run_id=llm_run_id):
             saved += 1
     return saved
 

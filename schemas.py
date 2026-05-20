@@ -321,6 +321,7 @@ class FactualExtract(BaseModel):
     procedural_steps_followed: list[str] = Field(default_factory=list)
     emotional_signals: list[str] = Field(default_factory=list)
     resolution_status: ResolutionStatus = "pending"
+    unanswered_questions: list[str] = Field(default_factory=list)
 
     @field_validator("call_id", "classified_type", mode="before")
     @classmethod
@@ -426,6 +427,7 @@ class CallEvaluation(BaseModel):
     voc_taxonomy_version: str | None = Field(default=None, max_length=120)
     rubric_version: str = Field(default_factory=rubric.rubric_version)
     validation_warnings: list[str] = Field(default_factory=list)
+    unanswered_questions: list[str] = Field(default_factory=list)
 
     @field_validator("call_id", "classified_type", mode="before")
     @classmethod
@@ -567,6 +569,7 @@ def build_call_evaluation(
         voc_extract=validated_voc,
         voc_taxonomy_version=validated_voc.taxonomy_version if validated_voc else None,
         validation_warnings=warnings,
+        unanswered_questions=list(factual_extract.unanswered_questions or []),
     )
     legacy = evaluation.model_dump()
     legacy["_model"] = model_name

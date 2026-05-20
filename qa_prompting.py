@@ -101,6 +101,7 @@ def build_extraction_messages(call: dict, kb_summary: str) -> list[dict]:
         "procedural_steps_followed": ["string"],
         "emotional_signals": ["string"],
         "resolution_status": "resolved|escalated|pending|unresolved|callback_scheduled",
+        "unanswered_questions": ["string"],
     }
     user_prompt = (
         "Tâche: extraction factuelle uniquement. Pas de scoring.\n"
@@ -110,6 +111,11 @@ def build_extraction_messages(call: dict, kb_summary: str) -> list[dict]:
         "- customer_call_reason doit être courte et lisible.\n"
         "- resolution_status doit refléter uniquement l'issue explicite de l'appel.\n"
         "- Si le transcript n'est pas exploitable, mets transcript_usable=false et laisse les listes vides si besoin.\n"
+        "- unanswered_questions : liste les questions du client auxquelles l'agent n'a PAS su répondre correctement.\n"
+        "  Inclure : agent admet ne pas savoir, donne une info vague ou incorrecte, élude la question.\n"
+        "  Exclure : questions répondues correctement, chitchat, demandes traitées (rappel programmé, transfert effectué).\n"
+        "  Format : 1 phrase en français à la 3e personne, reformulation concise (ex: \"Le client demande si X est compatible avec Y\").\n"
+        "  Mets [] si aucune question reste sans réponse.\n"
         "- Réponds uniquement avec un JSON conforme.\n\n"
         f"Rubric context:\n{rubric.build_rubric_prompt_block()}\n\n"
         f"Knowledge base:\n{kb_summary}\n\n"
