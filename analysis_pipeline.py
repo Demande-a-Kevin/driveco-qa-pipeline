@@ -1738,7 +1738,7 @@ def run_test():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline QA Driveco")
-    parser.add_argument("--mode", choices=["daily", "weekly", "reliability", "test", "kb_cluster"], default="test")
+    parser.add_argument("--mode", choices=["daily", "weekly", "reliability", "test", "kb_cluster", "kb_articles_index", "kb_article_gap"], default="test")
     parser.add_argument("--date", default=None,
                         help="Date cible YYYY-MM-DD (défaut : hier pour daily, lundi dernier pour weekly)")
     args = parser.parse_args()
@@ -1749,6 +1749,14 @@ if __name__ == "__main__":
         import kb_clusterer
         metrics = kb_clusterer.run_clustering()
         log.info("kb_clusterer done: %s", metrics)
+    elif args.mode == "kb_articles_index":
+        import kb_articles_indexer
+        result = kb_articles_indexer.run_indexing()
+        log.info("kb_articles_index result: %s", result)
+    elif args.mode == "kb_article_gap":
+        import kb_article_gap_clusterer
+        result = kb_article_gap_clusterer.run_clustering()
+        log.info("kb_article_gap result: %s", result)
     else:
         if args.date:
             target = datetime.strptime(args.date, "%Y-%m-%d")

@@ -36,6 +36,12 @@ case "$MODE" in
   kb_cluster)
     LOG_FILE="$LOG_DIR/cron_kb_cluster.log"
     ;;
+  kb_articles_index)
+    LOG_FILE="$LOG_DIR/cron_kb_articles_index.log"
+    ;;
+  kb_article_gap)
+    LOG_FILE="$LOG_DIR/cron_kb_article_gap.log"
+    ;;
   *)
     echo "Mode invalide: $MODE" >&2
     exit 1
