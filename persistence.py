@@ -732,6 +732,85 @@ def save_kb_gaps(gaps: list[dict], detected_on: datetime) -> int:
     return len(rows) if _execute_upsert("kb_gaps", rows, on_conflict="detected_on,topic") else 0
 
 
+def save_kb_suggestions(kb_gaps: dict, detected_on: datetime) -> int:
+    """Persiste analysis['kb_gaps'] (missing / incomplete / to_revise) dans la
+    table kb_suggestions pour exposition côté cockpit. Avant cette fonction,
+    ces suggestions ne vivaient que dans le post Slack quotidien."""
+    if not kb_gaps:
+        return 0
+    date_str = detected_on.strftime("%Y-%m-%d")
+    rows: list[dict] = []
+    for section in ("missing", "incomplete", "to_revise"):
+        for item in kb_gaps.get(section, []) or []:
+            if not isinstance(item, dict):
+                continue
+            # missing: {title, description}
+            # incomplete / to_revise: {article, observed_gap} OR {title, description}
+            title = item.get("title") or item.get("article")
+            description = item.get("description") or item.get("observed_gap")
+            if not title:
+                continue
+            rows.append(
+                {
+                    "detected_on": date_str,
+                    "section": section,
+                    "title": str(title)[:500],
+                    "description": (str(description)[:2000] if description else None),
+                    "source_label": item.get("label") or item.get("source_label"),
+                    "source_count": (
+                        int(item.get("count")) if item.get("count") is not None else None
+                    ),
+                }
+            )
+    if not rows:
+        return 0
+    # On garde l'historique (pas de DELETE) — la contrainte UNIQUE permet
+    # de re-run la pipeline pour le même jour sans dupliquer.
+    return (
+        len(rows)
+        if _execute_upsert("kb_suggestions", rows, on_conflict="detected_on,section,title")
+        else 0
+    )
+
+
+def save_call_reasons(call_reasons: list[dict], detected_on: datetime) -> int:
+    """Persiste voc_summary.call_reasons (top raisons d'appel taxonomie LLM FR)
+    dans daily_call_reasons. Reflète le bloc Slack "Raisons principales d'appel".
+
+    Source : metrics_builder.aggregate_call_reasons(evaluations).
+    Distinct de v_topics_hierarchy_daily (taxonomie recon Cocheo, EN)."""
+    if not call_reasons:
+        return 0
+    date_str = detected_on.strftime("%Y-%m-%d")
+    # Idempotent : on remplace l'agrégat du jour à chaque run.
+    _execute_delete("daily_call_reasons", detected_on=date_str)
+    rows: list[dict] = []
+    for item in call_reasons:
+        if not isinstance(item, dict):
+            continue
+        reason_code = item.get("reason_code") or item.get("label")
+        label = item.get("label") or reason_code
+        if not reason_code or not label:
+            continue
+        rows.append(
+            {
+                "detected_on": date_str,
+                "reason_code": str(reason_code)[:200],
+                "label": str(label)[:300],
+                "count": int(item.get("count") or 0),
+                "subreasons": item.get("subreasons") or [],
+                "example_call_ids": list(item.get("example_call_ids") or [])[:10],
+            }
+        )
+    if not rows:
+        return 0
+    return (
+        len(rows)
+        if _execute_upsert("daily_call_reasons", rows, on_conflict="detected_on,reason_code")
+        else 0
+    )
+
+
 def save_anomaly_event(event: dict) -> bool:
     row = {
         "id": event.get("id"),
