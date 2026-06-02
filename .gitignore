@@ -36,6 +36,7 @@ archives/
 # ── Fichiers d'état locaux ────────────────────────────────────
 last_kpi_extract.txt
 last_call_history_update.txt
+.csat_insight_state.json
 
 # ── Cache Python / Notion ─────────────────────────────────────
 __pycache__/

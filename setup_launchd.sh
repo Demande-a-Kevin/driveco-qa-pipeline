@@ -17,6 +17,7 @@ RELIABILITY_LABEL="com.kev1n.driveco.qa.reliability"
 KB_CLUSTER_LABEL="com.kev1n.driveco.qa.kb-cluster"
 KB_ARTICLES_INDEX_LABEL="com.kev1n.driveco.qa.kb-articles-index"
 KB_ARTICLE_GAP_LABEL="com.kev1n.driveco.qa.kb-article-gap"
+CSAT_INSIGHT_LABEL="com.kev1n.driveco.csat-insight"
 
 BENCH_PLIST="$LAUNCH_AGENTS_DIR/${BENCH_LABEL}.plist"
 DAILY_PLIST="$LAUNCH_AGENTS_DIR/${DAILY_LABEL}.plist"
@@ -26,11 +27,14 @@ RELIABILITY_PLIST="$LAUNCH_AGENTS_DIR/${RELIABILITY_LABEL}.plist"
 KB_CLUSTER_PLIST="$LAUNCH_AGENTS_DIR/${KB_CLUSTER_LABEL}.plist"
 KB_ARTICLES_INDEX_PLIST="$LAUNCH_AGENTS_DIR/${KB_ARTICLES_INDEX_LABEL}.plist"
 KB_ARTICLE_GAP_PLIST="$LAUNCH_AGENTS_DIR/${KB_ARTICLE_GAP_LABEL}.plist"
+CSAT_INSIGHT_PLIST="$LAUNCH_AGENTS_DIR/${CSAT_INSIGHT_LABEL}.plist"
+
+PYTHON_BIN="$RUNTIME_DIR/.venv/bin/python"
 
 BENCH_HOUR="${BENCH_HOUR:-1}"
 BENCH_MINUTE="${BENCH_MINUTE:-30}"
-DAILY_HOUR="${DAILY_HOUR:-2}"
-DAILY_MINUTE="${DAILY_MINUTE:-30}"
+DAILY_HOUR="${DAILY_HOUR:-1}"
+DAILY_MINUTE="${DAILY_MINUTE:-0}"
 WATCHDOG_HOUR="${WATCHDOG_HOUR:-6}"
 WATCHDOG_MINUTE="${WATCHDOG_MINUTE:-45}"
 WEEKLY_HOUR="${WEEKLY_HOUR:-7}"
@@ -318,7 +322,35 @@ cat > "$KB_ARTICLE_GAP_PLIST" <<EOF
 </plist>
 EOF
 
-for label in "$BENCH_LABEL" "$DAILY_LABEL" "$WATCHDOG_LABEL" "$WEEKLY_LABEL" "$RELIABILITY_LABEL" "$KB_CLUSTER_LABEL" "$KB_ARTICLES_INDEX_LABEL" "$KB_ARTICLE_GAP_LABEL"; do
+cat > "$CSAT_INSIGHT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CSAT_INSIGHT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PYTHON_BIN}</string>
+    <string>${RUNTIME_DIR}/csat_insight.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${RUNTIME_DIR}</string>
+  <key>StartInterval</key>
+  <integer>180</integer>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/csat-insight.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/csat-insight.err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>AbandonProcessGroup</key>
+  <true/>
+</dict>
+</plist>
+EOF
+
+for label in "$BENCH_LABEL" "$DAILY_LABEL" "$WATCHDOG_LABEL" "$WEEKLY_LABEL" "$RELIABILITY_LABEL" "$KB_CLUSTER_LABEL" "$KB_ARTICLES_INDEX_LABEL" "$KB_ARTICLE_GAP_LABEL" "$CSAT_INSIGHT_LABEL"; do
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
 done
 
@@ -330,6 +362,7 @@ launchctl bootstrap "gui/$(id -u)" "$RELIABILITY_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$KB_CLUSTER_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$KB_ARTICLES_INDEX_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$KB_ARTICLE_GAP_PLIST"
+launchctl bootstrap "gui/$(id -u)" "$CSAT_INSIGHT_PLIST"
 
 echo "LaunchAgents installés :"
 echo "  $BENCH_PLIST"
@@ -340,6 +373,7 @@ echo "  $RELIABILITY_PLIST"
 echo "  $KB_CLUSTER_PLIST"
 echo "  $KB_ARTICLES_INDEX_PLIST"
 echo "  $KB_ARTICLE_GAP_PLIST"
+echo "  $CSAT_INSIGHT_PLIST"
 echo "Runtime launchd :"
 echo "  $RUNTIME_DIR"
 echo ""
@@ -352,3 +386,4 @@ echo "  reliability : weekday ${RELIABILITY_WEEKDAY} ${RELIABILITY_HOUR}:$(print
 echo "  kb_cluster : ${KB_CLUSTER_HOUR}:$(printf '%02d' "$KB_CLUSTER_MINUTE")"
 echo "  kb_articles_index : ${KB_ARTICLES_INDEX_HOUR}:$(printf '%02d' "$KB_ARTICLES_INDEX_MINUTE")"
 echo "  kb_article_gap    : ${KB_ARTICLE_GAP_HOUR}:$(printf '%02d' "$KB_ARTICLE_GAP_MINUTE")"
+echo "  csat-insight : toutes les 180s (StartInterval)"

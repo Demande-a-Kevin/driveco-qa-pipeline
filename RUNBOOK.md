@@ -301,6 +301,61 @@ DAILY_HOUR=4 DAILY_MINUTE=0 bash setup_launchd.sh
 
 ---
 
+## CSAT Call Insight
+
+**But :** Lire automatiquement le canal `#sprig-responses-csat-care` (Slack) toutes les 3 minutes, détecter les nouveaux posts Sprig CSAT, puis poster en thread sous chaque post le lien du transcript Aircall et un verdict Gemma (≤ 55 mots) indiquant si la note vient de l'agent ou de la borne/app.
+
+**Label launchd :** `com.kev1n.driveco.csat-insight`
+
+**Intervalle :** 180 s (StartInterval, pas CalendarInterval — démarre au boot + toutes les 3 min)
+
+**Logs :**
+
+| Fichier | Contenu |
+|---------|---------|
+| `csat-insight.log` | stdout — logs INFO du pipeline |
+| `csat-insight.err.log` | stderr — erreurs Python non capturées |
+
+Dans `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/`.
+
+**Kill-switch :** `DISABLE_CSAT_INSIGHT=true` dans `.env` (ou en variable d'env) désactive toutes les passes sans toucher au fichier d'état.
+
+**Fichier d'état :** `.csat_insight_state.json` dans le répertoire runtime (non versionné).
+- Présent → reprend depuis le dernier `last_ts` connu.
+- Absent → au prochain run, initialise la baseline au timestamp courant (go-forward uniquement, pas de backfill de l'historique Slack).
+- Supprimer le fichier = ré-initialiser la baseline = ignorer tous les posts antérieurs.
+
+**Prérequis scope Slack :** le bot Kev1n doit avoir le scope `channels:history` (canal public `C0B724V5X4L`). Ce scope est déjà accordé. Si une erreur `missing_scope` apparaît dans les logs, réinstaller l'app Slack depuis le portail développeur Slack.
+
+**Aller en prod (go-live) :**
+
+1. S'assurer que `.csat_insight_state.json` n'existe PAS dans le runtime (premier run posera la baseline).
+2. Synchroniser le runtime et (re)charger les jobs :
+   ```bash
+   cd "/Users/kev1n/Desktop/Kev1n IA/Codex/driveco-qa-pipeline"
+   bash sync_launchd_runtime.sh
+   bash setup_launchd.sh
+   ```
+3. Vérifier que le job est chargé :
+   ```bash
+   launchctl list | grep csat-insight
+   ```
+4. Forcer un premier run pour poser la baseline (sans poster) :
+   ```bash
+   cd "$HOME/Library/Application Support/driveco-qa-pipeline/runtime"
+   .venv/bin/python csat_insight.py
+   # Doit logger : Baseline initialisée à <ts>
+   ```
+
+**Forcer un run manuel :**
+
+```bash
+cd "$HOME/Library/Application Support/driveco-qa-pipeline/runtime"
+.venv/bin/python csat_insight.py
+```
+
+---
+
 ## Configuration depuis le cockpit (depuis 2026-05-07)
 
 Depuis l'intégration QA UCC dans le cockpit, la config (rubric, prompt, sampling)
