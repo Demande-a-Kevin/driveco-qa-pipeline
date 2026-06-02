@@ -206,6 +206,9 @@ def _ensure_batch_stats(stats: dict | None) -> dict | None:
     stats.setdefault("auto_truncated_fields", 0)
     stats.setdefault("retry_successes", 0)
     stats.setdefault("retries_used", 0)
+    stats.setdefault("one_shot_successes", 0)
+    stats.setdefault("one_shot_fallbacks", 0)
+    stats.setdefault("legacy_analysis_calls", 0)
     stats.setdefault("failure_reasons", {})
     return stats
 
@@ -220,10 +223,10 @@ def _summarize_error(exc: Exception) -> str:
     return text[:160] if text else exc.__class__.__name__
 
 
-def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout: int, stats: dict | None = None) -> object:
+def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout: int,
+                    stats: dict | None = None, max_attempts: int = 3) -> object:
     attempt_messages = [dict(message) for message in messages]
     last_error = None
-    max_attempts = 3  # 1 passe initiale + 2 retries ciblés.
     for attempt in range(max_attempts):
         raw = _chat(
             model=config.OLLAMA_MODEL_ANALYSIS,
@@ -259,19 +262,42 @@ def _model_to_dict(model_object) -> dict:
     return model_object.model_dump()
 
 
-def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None) -> dict | None:
-    if not call.get("transcript"):
-        return None
-    cache_key = _cache_key(call, kb_summary)
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        if stats is not None:
-            stats["cache_hits"] = stats.get("cache_hits", 0) + 1
-        log.info(
-            "[ollama cache] hit call_id=%s",
-            call.get("call_id_internal") or call.get("call_id"),
-        )
-        return cached
+def _call_id_for_log(call: dict) -> str:
+    return str(call.get("call_id_internal") or call.get("call_id") or "")
+
+
+def _payload_from_evaluation(evaluation: schemas.CallEvaluation) -> dict:
+    payload = evaluation.model_dump()
+    payload["_model"] = config.OLLAMA_MODEL_ANALYSIS
+    return payload
+
+
+def _analyze_single_call_one_shot(call: dict, kb_summary: str, stats: dict | None = None) -> dict:
+    analysis = _validated_chat(
+        qa_prompting.build_one_shot_messages(call, kb_summary, enable_voc=config.ENABLE_VOC_ANALYSIS),
+        schemas.OneShotCallAnalysis,
+        max_tokens=config.OLLAMA_ONE_SHOT_MAX_TOKENS,
+        timeout=config.OLLAMA_ONE_SHOT_TIMEOUT,
+        stats=stats,
+        max_attempts=max(1, config.OLLAMA_ONE_SHOT_MAX_ATTEMPTS),
+    )
+    if config.ENABLE_VOC_ANALYSIS and analysis.voc_extract is None:
+        raise ValueError("one_shot_voc_missing")
+    evaluation = schemas.build_call_evaluation(
+        call=call,
+        factual_extract=analysis.factual_extract,
+        scorecard=analysis.scorecard,
+        model_name=config.OLLAMA_MODEL_ANALYSIS,
+        voc_extract=analysis.voc_extract if config.ENABLE_VOC_ANALYSIS else None,
+    )
+    if stats is not None:
+        stats["one_shot_successes"] += 1
+    return _payload_from_evaluation(evaluation)
+
+
+def _analyze_single_call_legacy(call: dict, kb_summary: str, stats: dict | None = None) -> dict | None:
+    if stats is not None:
+        stats["legacy_analysis_calls"] += 1
     extraction = _validated_chat(
         qa_prompting.build_extraction_messages(call, kb_summary),
         schemas.FactualExtract,
@@ -303,8 +329,34 @@ def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None)
         model_name=config.OLLAMA_MODEL_ANALYSIS,
         voc_extract=voc_extract,
     )
-    payload = evaluation.model_dump()
-    payload["_model"] = config.OLLAMA_MODEL_ANALYSIS
+    return _payload_from_evaluation(evaluation)
+
+
+def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None) -> dict | None:
+    if not call.get("transcript"):
+        return None
+    stats = _ensure_batch_stats(stats)
+    cache_key = _cache_key(call, kb_summary)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        if stats is not None:
+            stats["cache_hits"] = stats.get("cache_hits", 0) + 1
+        log.info("[ollama cache] hit call_id=%s", _call_id_for_log(call))
+        return cached
+    if config.OLLAMA_ANALYSIS_ONE_SHOT:
+        try:
+            payload = _analyze_single_call_one_shot(call, kb_summary, stats=stats)
+        except Exception as exc:  # noqa: BLE001
+            if stats is not None:
+                stats["one_shot_fallbacks"] += 1
+            log.warning(
+                "[ollama one-shot] fallback legacy call_id=%s (%s)",
+                _call_id_for_log(call),
+                exc,
+            )
+            payload = _analyze_single_call_legacy(call, kb_summary, stats=stats)
+    else:
+        payload = _analyze_single_call_legacy(call, kb_summary, stats=stats)
     _cache_put(cache_key, payload)
     return payload
 
@@ -367,6 +419,10 @@ def _heuristic_prescreen(call: dict) -> tuple[float, str]:
     if missed_reason == "timeout":
         score += 2.0
     return min(score, 10.0), "score heuristique (Ollama indisponible)"
+
+
+def heuristic_prescreen_call(call: dict) -> tuple[float, str]:
+    return _heuristic_prescreen(call)
 
 
 def _normalize_risk_value(value, default: float = 5.0) -> float:
@@ -548,3 +604,10 @@ def analyze_batch(system_prompt: str, batch_calls: list[dict],
                 exc,
             )
     return evaluations
+
+
+def generate_json(prompt: str, max_tokens: int = 300, timeout: int | None = None) -> dict:
+    """One-shot JSON local (Gemma). Réutilisé par csat_prompting."""
+    raw = _generate(config.OLLAMA_MODEL_ANALYSIS, prompt, max_tokens=max_tokens,
+                    timeout=timeout, json_mode=True)
+    return _parse_json(raw)
