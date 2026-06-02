@@ -606,20 +606,30 @@ def build_fallback_consolidation(metrics: dict, summary: dict) -> dict:
     }
 
 
-# ── Pre-screening Ollama ──────────────────────────────────────────────────────
+# ── Pre-screening ─────────────────────────────────────────────────────────────
 
 def run_prescreening(calls: list[dict]) -> dict[str, tuple[float, str]]:
     """
-    Pre-screening de tous les appels via Ollama (ou heuristique si Ollama indisponible).
+    Pre-screening de tous les appels.
+
+    Par défaut, le daily reste local-only et utilise un scoring heuristique :
+    tous les appels sont analysés ensuite, donc le pre-screening ne doit pas
+    payer une génération LLM juste pour router les batches.
+
+    `OLLAMA_PRESCREEN_MODE=llm` réactive l'ancien pre-screening Ollama.
     Retourne {call_id: (risk_score, reason)} pour chaque appel.
     """
     scores = {}
-    ollama_up = ollama_client.is_available()
-    if not ollama_up:
+    prescreen_mode = getattr(config, "OLLAMA_PRESCREEN_MODE", "heuristic")
+    use_llm = prescreen_mode == "llm"
+    ollama_up = ollama_client.is_available() if use_llm else False
+    if not use_llm:
+        log.info("  [prescreening] mode heuristique — aucun appel LLM de pre-screening")
+    elif not ollama_up:
         log.info("  [prescreening] Ollama non disponible — scoring heuristique pour tous les appels")
     batch_size = max(1, int(config.OLLAMA_PRESCREEN_BATCH_SIZE))
 
-    if ollama_up:
+    if use_llm and ollama_up:
         for start in range(0, len(calls), batch_size):
             batch = calls[start:start + batch_size]
             batch_scores = ollama_client.pre_screen_batch(batch)
@@ -632,7 +642,7 @@ def run_prescreening(calls: list[dict]) -> dict[str, tuple[float, str]]:
     else:
         for call in calls:
             cid = call.get("call_id_internal") or call.get("call_id")
-            risk, reason = ollama_client.pre_screen_call(call)
+            risk, reason = ollama_client.heuristic_prescreen_call(call)
             scores[cid] = (risk, reason)
             call["_risk_score"] = risk
             call["_risk_reason"] = reason
@@ -751,7 +761,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
     """
     Analyse calls_to_analyze via routing Ollama prioritaire :
 
-    1. Pre-screening Ollama (risk 0-10) sur tous les appels sélectionnés
+    1. Pre-screening local (risk 0-10) sur tous les appels sélectionnés
     2. Appels risque faible (<= OLLAMA_RISK_THRESHOLD) : analyse Ollama batch
     3. Appels risque élevé (>= HAIKU_REEVAL_THRESHOLD) : analyse Ollama batch
     4. Fallback Anthropic uniquement si explicitement activé
@@ -784,7 +794,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
             calls_to_analyze = remaining
 
     # ── Étape 1 : Pre-screening ───────────────────────────────────────────────
-    log.info(f"  [routing] Pre-screening {len(calls_to_analyze)} appels via Ollama...")
+    log.info(f"  [routing] Pre-screening {len(calls_to_analyze)} appels...")
     run_prescreening(calls_to_analyze)
     schemas.reset_clip_stats()
 
@@ -1206,6 +1216,14 @@ def _persist_daily_snapshot(target_date: datetime, metrics: dict, analysis: dict
 
     kb_gap_clusters = metrics_builder.cluster_kb_gaps(evaluations)
     persistence.save_kb_gaps(kb_gap_clusters, target_date)
+    # Persiste les suggestions KB lisibles (missing / incomplete / to_revise)
+    # consommées par le cockpit /qa/kb-gaps.
+    persistence.save_kb_suggestions(analysis.get("kb_gaps") or {}, target_date)
+    # Persiste les top raisons d'appel (taxonomie LLM FR) pour exposition cockpit /qa/topics.
+    # Source = aggregate_call_reasons via build_voc_summary.
+    persistence.save_call_reasons(
+        (analysis.get("voc_summary") or {}).get("call_reasons") or [], target_date
+    )
     for event in anomalies:
         persistence.save_anomaly_event(event)
 

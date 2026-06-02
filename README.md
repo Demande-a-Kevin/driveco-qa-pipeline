@@ -8,6 +8,7 @@ Pipeline Python d'analyse qualité des appels Driveco. Tourne en autonomie sur u
 - Analyse la qualité agent via Ollama local (Gemma 4)
 - Extrait la voix du client (VoC) séparément
 - Publie un rapport : **un seul post Slack** + Markdown local + Notion + Obsidian
+- **CSAT Call Insight** — répond automatiquement en thread sous chaque post CSAT Sprig avec le lien transcript Aircall + verdict Gemma (agent vs borne/app, ≤ 55 mots), toutes les 3 min via launchd
 
 ## Documentation
 
@@ -185,6 +186,11 @@ voc_taxonomy.yaml       # Taxonomie VoC versionnée
 system_prompt.txt       # Prompt QA agent
 prompts/voc_system.txt  # Prompt VoC client (séparé)
 config.py               # Chargement .env + constantes
+csat_insight.py         # CSAT Call Insight — orchestration (launchd toutes les 3 min)
+csat_parser.py          # Parsing posts Sprig → CsatPost
+csat_prompting.py       # Prompt Gemma + verdict normalisé (≤ 55 mots)
+csat_slack.py           # I/O Slack : historique canal CSAT, post thread, dédup
+csat_state.py           # Persistance JSON de l'état CSAT (last_ts + pending)
 setup_launchd.sh        # Installation runtime + plists launchd
 sync_launchd_runtime.sh # Sync repo source → runtime launchd
 run_from_cron.sh        # Wrapper de lancement (lock, log, état)

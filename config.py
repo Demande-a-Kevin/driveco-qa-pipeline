@@ -150,6 +150,11 @@ SLACK_BOT_TOKEN     = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID    = os.getenv("SLACK_CHANNEL_ID", "")
 SLACK_VOC_ALERTS_CHANNEL_ID = os.getenv("SLACK_VOC_ALERTS_CHANNEL_ID", SLACK_CHANNEL_ID)
 
+# ── CSAT Call Insight ─────────────────────────────────────────────────────────
+SLACK_CSAT_CHANNEL_ID = os.getenv("SLACK_CSAT_CHANNEL_ID", "C0B724V5X4L")
+SLACK_BOT_USER_ID     = os.getenv("SLACK_BOT_USER_ID", "U0AMEHDCDV5")  # bot Kev1n
+DISABLE_CSAT_INSIGHT  = os.getenv("DISABLE_CSAT_INSIGHT", "false").strip().lower() in {"1", "true", "yes", "on"}
+
 # ── Supabase ────────────────────────────────────────────────────────────────
 SUPABASE_URL        = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")

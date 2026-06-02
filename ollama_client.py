@@ -548,3 +548,10 @@ def analyze_batch(system_prompt: str, batch_calls: list[dict],
                 exc,
             )
     return evaluations
+
+
+def generate_json(prompt: str, max_tokens: int = 300, timeout: int | None = None) -> dict:
+    """One-shot JSON local (Gemma). Réutilisé par csat_prompting."""
+    raw = _generate(config.OLLAMA_MODEL_ANALYSIS, prompt, max_tokens=max_tokens,
+                    timeout=timeout, json_mode=True)
+    return _parse_json(raw)
