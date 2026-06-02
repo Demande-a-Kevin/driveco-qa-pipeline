@@ -112,6 +112,76 @@ class SchemaValidationTest(unittest.TestCase):
         )
         self.assertEqual(len(voc.best_practice_moments), 1)
 
+    def test_voc_effort_score_accepts_numeric_strings(self):
+        voc = schemas.VoCExtract.model_validate(
+            {
+                "topics": [],
+                "entity_perceptions": [],
+                "customer_emotions": ["satisfaction"],
+                "effort_score": "3",
+                "satisfaction_signal": "neutre",
+                "churn_risk_signal": "faible",
+                "expansion_signal": False,
+                "resolution_status": "pending",
+                "competitor_mentions": [],
+                "verbatim_quotes": [],
+                "best_practice_moments": [],
+                "unmet_needs": [],
+                "product_ideas": [],
+                "taxonomy_version": "voc_taxonomy_v1",
+                "needs_taxonomy_review": False,
+                "validation_warnings": [],
+            }
+        )
+        self.assertEqual(voc.effort_score, 3)
+
+    def test_voc_customer_emotions_discards_invalid_values(self):
+        voc = schemas.VoCExtract.model_validate(
+            {
+                "topics": [],
+                "entity_perceptions": [],
+                "customer_emotions": ["Satisfaction", "urgence", "confusion", ""],
+                "effort_score": 2,
+                "satisfaction_signal": "neutre",
+                "churn_risk_signal": "faible",
+                "expansion_signal": False,
+                "resolution_status": "pending",
+                "competitor_mentions": [],
+                "verbatim_quotes": [],
+                "best_practice_moments": [],
+                "unmet_needs": [],
+                "product_ideas": [],
+                "taxonomy_version": "voc_taxonomy_v1",
+                "needs_taxonomy_review": False,
+                "validation_warnings": [],
+            }
+        )
+        self.assertEqual(voc.customer_emotions, ["satisfaction", "confusion"])
+
+    def test_scorecard_accepts_string_null_for_optional_scores(self):
+        scorecard = schemas.CriterionScorecard.model_validate(
+            {
+                "accueil": "null",
+                "ecoute_active": "8",
+                "empathie": "",
+                "gestion_tension": "n/a",
+                "professionnalisme": None,
+                "clarte_communication": 7,
+                "orientation_solution": "6.5",
+                "cloture": "none",
+                "qualification_investigation": "9",
+                "kb_application": "null",
+                "observations": "ok",
+            }
+        )
+        self.assertIsNone(scorecard.accueil)
+        self.assertEqual(scorecard.ecoute_active, 8)
+        self.assertIsNone(scorecard.empathie)
+        self.assertIsNone(scorecard.gestion_tension)
+        self.assertEqual(scorecard.orientation_solution, 6.5)
+        self.assertIsNone(scorecard.cloture)
+        self.assertIsNone(scorecard.kb_application)
+
 
 if __name__ == "__main__":
     unittest.main()

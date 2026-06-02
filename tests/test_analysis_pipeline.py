@@ -6,6 +6,27 @@ import analysis_pipeline
 
 
 class AnalysisPipelineTest(unittest.TestCase):
+    def test_run_prescreening_heuristic_mode_skips_ollama_llm(self):
+        calls = [
+            {
+                "call_id": "short",
+                "call_id_internal": "short",
+                "answered": "Yes",
+                "duration_in_call": 30,
+                "tags": "",
+            }
+        ]
+
+        with mock.patch.object(analysis_pipeline.config, "OLLAMA_PRESCREEN_MODE", "heuristic"), \
+             mock.patch.object(analysis_pipeline.ollama_client, "is_available") as is_available, \
+             mock.patch.object(analysis_pipeline.ollama_client, "pre_screen_batch") as pre_screen_batch:
+            scores = analysis_pipeline.run_prescreening(calls)
+
+        is_available.assert_not_called()
+        pre_screen_batch.assert_not_called()
+        self.assertEqual(scores["short"][0], 3.0)
+        self.assertEqual(calls[0]["_risk_score"], 3.0)
+
     def test_build_run_health_summary_marks_degraded_runs(self):
         summary = analysis_pipeline.build_run_health_summary(
             selected_calls=55,

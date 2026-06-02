@@ -59,6 +59,37 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(batch_stats["calls_failed"], 1)
         self.assertEqual(batch_stats["failure_reasons"]["json_invalid"], 1)
 
+    def test_one_shot_failure_falls_back_to_legacy_analysis(self):
+        call = {"call_id_internal": "c1", "call_id": "c1", "transcript": "[Client] Bonjour"}
+        stats = {}
+
+        with mock.patch.object(config, "LLM_CACHE_ENABLED", False), \
+             mock.patch.object(config, "OLLAMA_ANALYSIS_ONE_SHOT", True), \
+             mock.patch.object(ollama_client, "_analyze_single_call_one_shot", side_effect=ValueError("json_invalid")) as one_shot, \
+             mock.patch.object(ollama_client, "_analyze_single_call_legacy", return_value={"call_id": "c1", "_model": "gemma4:latest"}) as legacy:
+            payload = ollama_client._analyze_single_call(call, "kb", stats=stats)
+
+        self.assertEqual(payload["call_id"], "c1")
+        one_shot.assert_called_once()
+        legacy.assert_called_once()
+        self.assertEqual(stats["one_shot_fallbacks"], 1)
+
+    def test_one_shot_uses_dedicated_timeout_and_attempt_floor(self):
+        call = {"call_id_internal": "c1", "call_id": "c1", "transcript": "[Client] Bonjour"}
+
+        with mock.patch.object(config, "ENABLE_VOC_ANALYSIS", False), \
+             mock.patch.object(config, "OLLAMA_ONE_SHOT_MAX_TOKENS", 456), \
+             mock.patch.object(config, "OLLAMA_ONE_SHOT_TIMEOUT", 123), \
+             mock.patch.object(config, "OLLAMA_ONE_SHOT_MAX_ATTEMPTS", 0), \
+             mock.patch.object(ollama_client.qa_prompting, "build_one_shot_messages", return_value=[{"role": "user", "content": "x"}]), \
+             mock.patch.object(ollama_client, "_validated_chat", side_effect=ValueError("timeout")) as validated:
+            with self.assertRaises(ValueError):
+                ollama_client._analyze_single_call_one_shot(call, "kb", stats={})
+
+        self.assertEqual(validated.call_args.kwargs["max_tokens"], 456)
+        self.assertEqual(validated.call_args.kwargs["timeout"], 123)
+        self.assertEqual(validated.call_args.kwargs["max_attempts"], 1)
+
 
 class AnalysisCacheTest(unittest.TestCase):
     """Cache idempotent des analyses QA : un rerun sur la même date ne doit

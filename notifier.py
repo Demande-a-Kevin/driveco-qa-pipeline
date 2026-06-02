@@ -130,6 +130,24 @@ def _format_duration(seconds) -> str:
     return f"{total // 60}min{total % 60:02d}s"
 
 
+def _normalize_block_key(value) -> str:
+    text = re.sub(r"[_\-]+", " ", str(value or "").strip().lower())
+    text = re.sub(r"\b(?:d|de|du|des|l|la|le|les)\b", " ", text)
+    return re.sub(r"\s+", " ", text)
+
+
+def _voc_item_key(item: dict) -> str:
+    if not isinstance(item, dict):
+        return _normalize_block_key(item)
+    return _normalize_block_key(
+        item.get("topic_code")
+        or item.get("label")
+        or item.get("reason_code")
+        or item.get("description")
+        or item.get("competitor_name")
+    )
+
+
 def _format_call_reason_lines(call_reasons: list[dict], limit: int = 6) -> list[str]:
     lines = []
     for item in (call_reasons or [])[:limit]:
@@ -143,6 +161,16 @@ def _format_call_reason_lines(call_reasons: list[dict], limit: int = 6) -> list[
                 subreasons.append(f"{sub_label}: {sub_count}")
         detail = f" ({', '.join(subreasons[:3])})" if subreasons else ""
         lines.append(f"• *{label}* — {count} appel(s){detail}")
+    return lines
+
+
+def _format_customer_problem_lines(customer_problems: list[dict], limit: int = 6) -> list[str]:
+    lines = []
+    for item in (customer_problems or [])[:limit]:
+        label = item.get("label") or item.get("topic_code") or "Problématique non classée"
+        count = int(item.get("count") or 0)
+        if count:
+            lines.append(f"• *{label}* — {count} mention(s)")
     return lines
 
 
@@ -567,8 +595,16 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         })
         blocks.append({"type": "divider"})
 
+    voc_summary = analysis.get("voc_summary") or {}
+    call_reasons = voc_summary.get("call_reasons") or []
+    customer_problems = voc_summary.get("customer_problems") or voc_summary.get("top_topics") or []
+    opportunities = voc_summary.get("opportunities") or []
+    best_practices = voc_summary.get("best_practices") or []
+    competitors = voc_summary.get("competitors") or []
+    seen_voc_keys: set[str] = set()
+
     transcript_reasons = _build_transcript_reason_summary(analysis)
-    if mode != "daily" and transcript_reasons:
+    if mode != "daily" and transcript_reasons and not call_reasons:
         reason_lines = [f"• {label} — {count} occurrence(s)" for label, count in transcript_reasons]
         blocks.append({
             "type": "section",
@@ -576,24 +612,25 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         })
         blocks.append({"type": "divider"})
 
-    voc_summary = analysis.get("voc_summary") or {}
-    call_reasons = voc_summary.get("call_reasons") or []
-    top_topics = voc_summary.get("top_topics") or []
-    opportunities = voc_summary.get("opportunities") or []
-    best_practices = voc_summary.get("best_practices") or []
-    competitors = voc_summary.get("competitors") or []
-    # Bloc principal : on privilégie les raisons d'appel granulaires. Les
-    # top_topics restent en fallback pour les anciens rapports sans call_reasons.
     reason_lines = _format_call_reason_lines(call_reasons)
-    if not reason_lines and top_topics:
-        reason_lines = [
-            f"• *{item.get('label') or item.get('topic_code')}* — {item.get('count', 0)} mention(s)"
-            for item in top_topics[:6]
-        ]
     if reason_lines:
+        seen_voc_keys.update(key for key in (_voc_item_key(item) for item in call_reasons) if key)
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "*Raisons d’appel :*\n" + "\n".join(reason_lines)},
+            "text": {"type": "mrkdwn", "text": "*Raisons principales d’appel :*\n" + "\n".join(reason_lines)},
+        })
+        blocks.append({"type": "divider"})
+
+    customer_problems = [
+        item for item in customer_problems
+        if not _voc_item_key(item) or _voc_item_key(item) not in seen_voc_keys
+    ]
+    problem_lines = _format_customer_problem_lines(customer_problems)
+    if problem_lines:
+        seen_voc_keys.update(key for key in (_voc_item_key(item) for item in customer_problems) if key)
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Problématiques clients détectées :*\n" + "\n".join(problem_lines)},
         })
         blocks.append({"type": "divider"})
 
@@ -826,10 +863,15 @@ def send_alert(message: str, level: str = "warning") -> bool:
 
 
 def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
+    if mode == "weekly":
+        # En hebdo, les raisons d'appel sont déjà dans le post principal.
+        # Garder un side-post VoC séparé recrée le même bloc une deuxième fois.
+        return True
     summary = analysis.get("voc_summary") or {}
     call_reasons = summary.get("call_reasons") or []
+    customer_problems = summary.get("customer_problems") or summary.get("top_topics") or []
     weak_signals = summary.get("weak_signals") or []
-    if not weak_signals and not call_reasons:
+    if not weak_signals and not call_reasons and not customer_problems:
         return True
     if _slack_already_sent("voc", mode, date):
         print(f"[notifier] ℹ️  Slack VoC {mode} {date.strftime('%Y-%m-%d')} déjà envoyé — ignoré")
@@ -865,6 +907,19 @@ def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:
                         f"• `{item.get('topic_code')}` — {item.get('count', 0)} mention(s)"
                         for item in weak_signals[:5]
                     ),
+                },
+            }
+        )
+    problem_lines = _format_customer_problem_lines(customer_problems, limit=8)
+    if problem_lines:
+        if reason_lines or weak_signals:
+            blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Problématiques clients détectées :*\n" + "\n".join(problem_lines),
                 },
             }
         )

@@ -80,7 +80,8 @@ def fetch_calls_range(ts_from: int, ts_to: int) -> list[dict]:
         calls = d1_client.fetch_call_history(ts_from, ts_to)
         if calls:
             # Normalise les noms de champs (le worker peut renvoyer camelCase ou snake_case)
-            return [_normalize_call(c) for c in calls]
+            d1_calls = [_normalize_call(c) for c in calls]
+            return _compare_recent_d1_with_aircall_direct(ts_from, ts_to, d1_calls)
         log.warning(
             "[call_fetcher] D1 a renvoyé 0 appel (%s → %s), fallback Aircall direct",
             ts_from,
@@ -92,6 +93,30 @@ def fetch_calls_range(ts_from: int, ts_to: int) -> list[dict]:
             exc,
         )
     return fetch_calls_range_aircall_direct(ts_from, ts_to)
+
+
+def _compare_recent_d1_with_aircall_direct(ts_from: int, ts_to: int, d1_calls: list[dict]) -> list[dict]:
+    """Evite de publier un daily basé sur un cache D1 encore partiel."""
+    compare_days = int(getattr(config, "AIRCALL_RECENT_DIRECT_COMPARE_DAYS", 0) or 0)
+    if compare_days <= 0:
+        return d1_calls
+    now_ts = int(datetime.now(_PARIS_TZ).timestamp()) if _PARIS_TZ is not None else int(time.time())
+    if ts_to < now_ts - compare_days * 86400:
+        return d1_calls
+    direct_calls = fetch_calls_range_aircall_direct(ts_from, ts_to)
+    if len(direct_calls) > len(d1_calls):
+        log.warning(
+            "[call_fetcher] D1 semble partiel (%s appel(s)); Aircall direct en voit %s — source Aircall utilisée",
+            len(d1_calls),
+            len(direct_calls),
+        )
+        return direct_calls
+    log.info(
+        "[call_fetcher] D1 confirmé par Aircall direct (%s D1 / %s direct)",
+        len(d1_calls),
+        len(direct_calls),
+    )
+    return d1_calls
 
 
 def fetch_calls_range_aircall_direct(ts_from: int, ts_to: int) -> list[dict]:

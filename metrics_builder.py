@@ -683,6 +683,10 @@ def _evaluation_reason_text(evaluation: dict) -> str:
     return _fold_reason_text(" ".join(str(item) for item in fragments if item))
 
 
+def _evaluation_primary_reason_text(evaluation: dict) -> str:
+    return _fold_reason_text(evaluation.get("customer_call_reason") or "")
+
+
 def _call_reason_matches(definition: dict, topic_codes: set[str], text: str) -> bool:
     return bool(topic_codes & set(definition.get("topic_codes") or set())) or _contains_any(
         text, tuple(definition.get("keywords") or ())
@@ -724,8 +728,33 @@ def _fallback_call_reason_definition(evaluation: dict, topic_codes: list[str], l
     }
 
 
+def _select_primary_call_reason_definition(
+    evaluation: dict,
+    topic_codes_ordered: list[str],
+    labels: dict[str, str],
+) -> dict | None:
+    primary_text = _evaluation_primary_reason_text(evaluation)
+    if primary_text:
+        for definition in _CALL_REASON_DEFINITIONS:
+            if _contains_any(primary_text, tuple(definition.get("keywords") or ())):
+                return definition
+
+    for code in topic_codes_ordered:
+        for definition in _CALL_REASON_DEFINITIONS:
+            if code in set(definition.get("topic_codes") or set()):
+                return definition
+
+    topic_codes = set(topic_codes_ordered)
+    full_text = _evaluation_reason_text(evaluation)
+    for definition in _CALL_REASON_DEFINITIONS:
+        if _call_reason_matches(definition, topic_codes, full_text):
+            return definition
+
+    return _fallback_call_reason_definition(evaluation, topic_codes_ordered, labels)
+
+
 def aggregate_call_reasons(evaluations: list[dict], limit: int = 8) -> list[dict]:
-    """Agrège les raisons d'appel avec des sous-motifs actionnables."""
+    """Agrège une seule raison principale par appel, avec sous-motifs actionnables."""
     labels = voc_taxonomy.axis_label_map("topics")
     buckets: dict[str, dict] = {}
     for index, evaluation in enumerate(evaluations or []):
@@ -735,36 +764,31 @@ def aggregate_call_reasons(evaluations: list[dict], limit: int = 8) -> list[dict
         topic_codes_ordered = _evaluation_topic_codes(evaluation)
         topic_codes = set(topic_codes_ordered)
         text = _evaluation_reason_text(evaluation)
-        definitions = [
-            definition for definition in _CALL_REASON_DEFINITIONS
-            if _call_reason_matches(definition, topic_codes, text)
-        ]
-        if not definitions:
-            fallback = _fallback_call_reason_definition(evaluation, topic_codes_ordered, labels)
-            definitions = [fallback] if fallback else []
+        definition = _select_primary_call_reason_definition(evaluation, topic_codes_ordered, labels)
+        if not definition:
+            continue
 
-        for definition in definitions:
-            key = definition["reason_code"]
-            bucket = buckets.setdefault(
-                key,
-                {
-                    "reason_code": key,
-                    "label": definition["label"],
-                    "count": 0,
-                    "example_call_ids": [],
-                    "_call_ids": set(),
-                    "_subreason_counts": Counter(),
-                },
-            )
-            if call_id in bucket["_call_ids"]:
-                continue
-            bucket["_call_ids"].add(call_id)
-            bucket["count"] += 1
-            if call_id and len(bucket["example_call_ids"]) < 5:
-                bucket["example_call_ids"].append(call_id)
-            subreason = _call_reason_subreason(definition, topic_codes, text)
-            if subreason:
-                bucket["_subreason_counts"][subreason] += 1
+        key = definition["reason_code"]
+        bucket = buckets.setdefault(
+            key,
+            {
+                "reason_code": key,
+                "label": definition["label"],
+                "count": 0,
+                "example_call_ids": [],
+                "_call_ids": set(),
+                "_subreason_counts": Counter(),
+            },
+        )
+        if call_id in bucket["_call_ids"]:
+            continue
+        bucket["_call_ids"].add(call_id)
+        bucket["count"] += 1
+        if call_id and len(bucket["example_call_ids"]) < 5:
+            bucket["example_call_ids"].append(call_id)
+        subreason = _call_reason_subreason(definition, topic_codes, text)
+        if subreason:
+            bucket["_subreason_counts"][subreason] += 1
 
     output = []
     for bucket in buckets.values():
@@ -960,9 +984,11 @@ def build_voc_summary(evaluations: list[dict]) -> dict:
         if count >= config.VOC_MIN_WEAK_SIGNAL_COUNT
     ]
     weak_signals.sort(key=lambda item: (-item["count"], item["topic_code"]))
+    customer_problems = aggregate_voc_topics(evaluations)
     return {
         "call_reasons": aggregate_call_reasons(evaluations),
-        "top_topics": aggregate_voc_topics(evaluations),
+        "customer_problems": customer_problems,
+        "top_topics": customer_problems,
         "entity_sentiment": aggregate_voc_entity_sentiment(evaluations),
         "churn_risk_calls": aggregate_voc_churn_risks(evaluations),
         "churn_risk_typology": aggregate_voc_churn_risk_typology(evaluations),

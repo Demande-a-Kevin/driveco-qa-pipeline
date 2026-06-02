@@ -119,11 +119,53 @@ class SlackDedupFlagsTest(unittest.TestCase):
             if isinstance(block.get("text"), dict)
         )
 
-        self.assertIn("Raisons d’appel", text)
+        self.assertIn("Raisons principales d’appel", text)
         self.assertIn("Interruption de charge", text)
         self.assertIn("TPE / CB: 1", text)
-        self.assertNotIn("Voix du client", text)
+        self.assertIn("Problématiques clients détectées", text)
+        self.assertIn("Voix du client", text)
         self.assertNotIn("Risque client détecté", text)
+
+    def test_weekly_voc_side_post_is_suppressed(self):
+        analysis = {
+            "voc_summary": {
+                "call_reasons": [{"label": "Interruption de charge", "count": 3}],
+                "weak_signals": [{"topic_code": "interruption_charge", "count": 3}],
+            }
+        }
+        with mock.patch.object(notifier, "_post_to_slack", return_value=True) as post:
+            ok = notifier.send_voc_alerts(analysis, mode="weekly", date=self.date)
+        self.assertTrue(ok)
+        post.assert_not_called()
+        self.assertFalse(notifier._slack_already_sent("voc", "weekly", self.date))
+
+    def test_weekly_slack_does_not_duplicate_reason_blocks(self):
+        analysis = {
+            "kpis": {"calls_presented": 3, "calls_answered": 2, "answerable_calls": 3},
+            "scores": {},
+            "call_evaluations": [{"call_id": "1", "customer_call_reason": "Interruption de charge"}],
+            "top_problematic_calls": [],
+            "kb_gaps": {"missing": [], "incomplete": [], "to_revise": []},
+            "voc_summary": {
+                "call_reasons": [{"label": "Interruption de charge", "count": 1}],
+                "top_topics": [
+                    {"topic_code": "interruption_charge", "count": 1},
+                    {"topic_code": "app_bug", "label": "App bug", "count": 2},
+                ],
+            },
+        }
+
+        blocks = notifier.build_slack_blocks(analysis, "weekly", self.date, calls=[])
+        text = "\n".join(
+            block.get("text", {}).get("text", "")
+            for block in blocks
+            if isinstance(block.get("text"), dict)
+        )
+
+        self.assertIn("Raisons principales d’appel", text)
+        self.assertNotIn("Pourquoi les clients ont appelé", text)
+        self.assertNotIn("interruption_charge", text)
+        self.assertEqual(text.count("Interruption de charge"), 1)
 
 
 if __name__ == "__main__":

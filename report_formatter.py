@@ -150,24 +150,26 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
     summary = analysis.get("voc_summary") or {}
     call_reasons = summary.get("call_reasons") or []
     top_topics = summary.get("top_topics") or []
+    customer_problems = summary.get("customer_problems") or top_topics
     verbatims = summary.get("verbatims") or []
     weak_signals = summary.get("weak_signals") or []
     competitors = summary.get("competitors") or []
     opportunities = summary.get("opportunities") or []
     best_practices = summary.get("best_practices") or []
     positive_satisfaction = summary.get("positive_satisfaction") or {}
-    if not (call_reasons or top_topics or verbatims or weak_signals or competitors or opportunities or best_practices):
+    competitor_details_rendered = False
+    if not (call_reasons or customer_problems or verbatims or weak_signals or competitors or opportunities or best_practices):
         return
 
     lines += ["## Raisons d'appel", ""]
     if call_reasons:
-        lines.append("### Raisons principales")
+        lines.append("### Raisons principales par appel")
         for item in call_reasons[:8]:
             lines.append(_format_call_reason_line(item))
         lines.append("")
-    if top_topics:
-        lines.append("### Topics détectés")
-        for item in top_topics[:5]:
+    if customer_problems:
+        lines.append("### Problématiques clients détectées")
+        for item in customer_problems[:5]:
             lines.append(f"- {item.get('label', item.get('topic_code'))} — {item.get('count', 0)} mention(s)")
         lines.append("")
     if weak_signals:
@@ -187,6 +189,7 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
             sample = item.get("sample_quote") or "contexte non disponible"
             lines.append(f"- {item.get('competitor_name')} — {item.get('count', 0)} mention(s) — « {sample} »")
         lines.append("")
+        competitor_details_rendered = True
     if opportunities:
         lines.append("### 💡 Opportunités détectées")
         for item in opportunities[:5]:
@@ -203,7 +206,7 @@ def _append_voc_section(lines: list[str], analysis: dict) -> None:
         if positive_satisfaction.get("sample_quote"):
             lines.append(f"- Verbatim : « {positive_satisfaction.get('sample_quote')} »")
         lines.append("")
-    if competitors:
+    if competitors and not competitor_details_rendered:
         lines.append("### 👀 Concurrents cités")
         names = ", ".join(item.get("competitor_name", "?") for item in competitors[:5])
         lines.append(f"- {sum(int(item.get('count', 0) or 0) for item in competitors)} mention(s) — {names}")
@@ -220,6 +223,23 @@ def _dedupe_texts(items: list[dict]) -> list[dict]:
         seen.add(normalized)
         output.append(item)
     return output
+
+
+def _normalize_block_key(value) -> str:
+    text = re.sub(r"[_\-]+", " ", str(value or "").strip().lower())
+    text = re.sub(r"\b(?:d|de|du|des|l|la|le|les)\b", " ", text)
+    return re.sub(r"\s+", " ", text)
+
+
+def _voc_item_key(item: dict) -> str:
+    if not isinstance(item, dict):
+        return _normalize_block_key(item)
+    return _normalize_block_key(
+        item.get("topic_code")
+        or item.get("label")
+        or item.get("description")
+        or item.get("competitor_name")
+    )
 
 
 def build_actionable_items(analysis: dict) -> list[dict]:
@@ -528,10 +548,23 @@ def format_weekly_report(start: datetime, end: datetime, metrics: dict, analysis
             lines.append(f"- {row.get('topic_code')} — {row.get('mentions')} mention(s), sentiment {row.get('avg_sentiment')}")
         lines.append("")
 
+    shown_topic_keys = set()
+    for row in topic_rows[:5]:
+        key = _voc_item_key(row)
+        if key:
+            shown_topic_keys.add(key)
     weak_signals = (analysis.get("voc_summary") or {}).get("weak_signals") or []
-    if weak_signals:
+    unique_weak_signals = []
+    for row in weak_signals:
+        key = _voc_item_key(row)
+        if key and key in shown_topic_keys:
+            continue
+        if key:
+            shown_topic_keys.add(key)
+        unique_weak_signals.append(row)
+    if unique_weak_signals:
         lines += ["## Nouveaux signaux faibles / clos"]
-        for row in weak_signals[:5]:
+        for row in unique_weak_signals[:5]:
             lines.append(f"- {row.get('topic_code')} — {row.get('count', 0)} mention(s)")
         lines.append("")
 

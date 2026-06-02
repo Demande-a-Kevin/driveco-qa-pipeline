@@ -19,6 +19,7 @@ VoCEmotion = Literal["frustration", "colère", "résignation", "soulagement", "s
 SatisfactionSignal = Literal["positif", "neutre", "négatif", "mixte"]
 ChurnRiskSignal = Literal["aucun", "faible", "modéré", "élevé"]
 ResolutionStatus = Literal["resolved", "escalated", "pending", "unresolved", "callback_scheduled"]
+_VOC_EMOTION_VALUES = {"frustration", "colère", "résignation", "soulagement", "satisfaction", "confusion", "inquiétude"}
 _CLIP_EVENTS = 0
 
 
@@ -262,6 +263,31 @@ class VoCExtract(BaseModel):
     needs_taxonomy_review: bool = False
     validation_warnings: list[str] = Field(default_factory=list)
 
+    @field_validator("customer_emotions", mode="before")
+    @classmethod
+    def _clean_customer_emotions(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple, set)):
+            return []
+        out = []
+        for item in value:
+            cleaned = re.sub(r"\s+", " ", str(item or "").strip().lower())
+            if cleaned in _VOC_EMOTION_VALUES and cleaned not in out:
+                out.append(cleaned)
+        return out
+
+    @field_validator("effort_score", mode="before")
+    @classmethod
+    def _coerce_effort_score(cls, value):
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit():
+                return int(stripped)
+        return value
+
     @field_validator("unmet_needs", "product_ideas", "validation_warnings", mode="before")
     @classmethod
     def _clean_text_list(cls, value):
@@ -369,6 +395,28 @@ class CriterionScorecard(BaseModel):
     kb_application: float | None = Field(default=None, ge=0, le=10)
     observations: str = Field(default="", max_length=320)
 
+    @field_validator(
+        "accueil",
+        "ecoute_active",
+        "empathie",
+        "gestion_tension",
+        "professionnalisme",
+        "clarte_communication",
+        "orientation_solution",
+        "cloture",
+        "qualification_investigation",
+        "kb_application",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_score(cls, value):
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            if stripped in {"", "null", "none", "n/a"}:
+                return None
+            return stripped
+        return value
+
     @field_validator("observations", mode="before")
     @classmethod
     def _clean_observations(cls, value):
@@ -387,6 +435,12 @@ class CriterionScorecard(BaseModel):
             "qualification_investigation": self.qualification_investigation,
             "kb_application": self.kb_application,
         }
+
+
+class OneShotCallAnalysis(BaseModel):
+    factual_extract: FactualExtract
+    scorecard: CriterionScorecard
+    voc_extract: VoCExtract | None = None
 
 
 class SoftSkillScore(BaseModel):

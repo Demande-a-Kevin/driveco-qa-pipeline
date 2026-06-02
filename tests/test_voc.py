@@ -210,6 +210,34 @@ class VoCTest(unittest.TestCase):
                     "verbatim_quotes": [],
                 },
             },
+            {
+                "call_id": "4",
+                "customer_call_reason": "Charge interrompue pendant le paiement",
+                "voc_extract": {
+                    "topics": [
+                        {
+                            "topic_code": "interruption_charge",
+                            "sentiment": "négatif",
+                            "severity": 4,
+                            "quote": "La charge s'est arrêtée pendant le paiement",
+                        },
+                        {
+                            "topic_code": "app_paiement",
+                            "sentiment": "négatif",
+                            "severity": 3,
+                            "quote": "Le paiement a aussi posé problème",
+                        },
+                        {
+                            "topic_code": "app_bug",
+                            "sentiment": "négatif",
+                            "severity": 2,
+                            "quote": "L'application affichait une erreur",
+                        },
+                    ],
+                    "entity_perceptions": [],
+                    "verbatim_quotes": [],
+                },
+            },
         ]
 
         summary = metrics_builder.build_voc_summary(evaluations)
@@ -221,6 +249,10 @@ class VoCTest(unittest.TestCase):
         interruption_subreasons = {item["label"] for item in reasons["Interruption de charge"]["subreasons"]}
         payment_subreasons = {item["label"] for item in reasons["Paiement application"]["subreasons"]}
         location_subreasons = {item["label"] for item in reasons["Difficulté à trouver la borne"]["subreasons"]}
+        self.assertEqual(sum(item["count"] for item in summary["call_reasons"]), len(evaluations))
+        self.assertEqual(reasons["Interruption de charge"]["count"], 2)
+        self.assertEqual(reasons["Paiement application"]["count"], 1)
+        self.assertGreater(sum(item["count"] for item in summary["customer_problems"]), len(evaluations))
         self.assertIn("Badge RFID / interopérabilité", interruption_subreasons)
         self.assertIn("TPE / CB", payment_subreasons)
         self.assertIn("Signalétique / borne introuvable", location_subreasons)

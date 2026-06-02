@@ -276,6 +276,116 @@ def build_voc_messages(call: dict, score_global: float | None = None) -> list[di
     return messages
 
 
+def build_one_shot_messages(call: dict, kb_summary: str, enable_voc: bool = True) -> list[dict]:
+    payload = build_call_payload(call)
+    factual_schema = {
+        "call_id": "string",
+        "classified_type": "string",
+        "customer_call_reason": "string|null",
+        "transcript_usable": "boolean",
+        "kb_compliance": {
+            "status": "conforme|partiel|non_conforme",
+            "article": "string|null",
+            "rationale": "string|null",
+        },
+        "positives": [{"text": "string", "citation": "string <=160", "kb_reference": "string|null"}],
+        "improvement_points": [{"text": "string", "citation": "string <=160", "kb_reference": "string|null"}],
+        "alerts": [{"level": "critical|warning|info", "message": "string", "call_ids": ["string"]}],
+        "procedural_steps_followed": ["string"],
+        "emotional_signals": ["string"],
+        "resolution_status": "resolved|escalated|pending|unresolved|callback_scheduled",
+        "unanswered_questions": ["string"],
+    }
+    score_schema = {
+        "accueil": "number|null 0-10",
+        "ecoute_active": "number|null 0-10",
+        "empathie": "number|null 0-10",
+        "gestion_tension": "number|null 0-10",
+        "professionnalisme": "number|null 0-10",
+        "clarte_communication": "number|null 0-10",
+        "orientation_solution": "number|null 0-10",
+        "cloture": "number|null 0-10",
+        "qualification_investigation": "number|null 0-10",
+        "kb_application": "number|null 0-10",
+        "observations": "string <=320",
+    }
+    voc_schema = {
+        "topics": [
+            {
+                "topic_code": "string",
+                "product_area": "app|hardware|billing|api|installation|support|other",
+                "sentiment": "très_négatif|négatif|neutre|positif|très_positif",
+                "severity": "1-5",
+                "quote": "string <=240",
+                "needs_taxonomy_review": "bool",
+            }
+        ],
+        "entity_perceptions": [
+            {
+                "entity_code": "string",
+                "aspect_code": "string",
+                "sentiment": "très_négatif|négatif|neutre|positif|très_positif",
+                "quote": "string <=240",
+                "needs_taxonomy_review": "bool",
+            }
+        ],
+        "customer_emotions": ["frustration|colère|résignation|soulagement|satisfaction|confusion|inquiétude"],
+        "effort_score": "1|2|3|4|5",
+        "satisfaction_signal": "positif|neutre|négatif|mixte",
+        "churn_risk_signal": "aucun|faible|modéré|élevé",
+        "expansion_signal": "boolean",
+        "resolution_status": "resolved|escalated|pending|unresolved|callback_scheduled",
+        "competitor_mentions": [
+            {"competitor_name": "string", "context_quote": "string <=240", "sentiment": "très_négatif|négatif|neutre|positif|très_positif"}
+        ],
+        "verbatim_quotes": [
+            {"quote": "string <=240", "timestamp_s": "int|null", "speaker": "string|null", "topic_code": "string|null", "sentiment": "enum|null"}
+        ],
+        "best_practice_moments": [
+            {"quote": "string <=240", "timestamp_s": "int|null", "speaker": "string|null", "topic_code": "string|null", "sentiment": "enum|null"}
+        ],
+        "unmet_needs": ["string"],
+        "product_ideas": ["string"],
+        "taxonomy_version": voc_taxonomy.taxonomy_version(),
+        "needs_taxonomy_review": "boolean",
+        "validation_warnings": ["string"],
+    }
+    schema_hint = {
+        "factual_extract": factual_schema,
+        "scorecard": score_schema,
+        "voc_extract": voc_schema if enable_voc else None,
+    }
+    system_prompt = load_base_system_prompt()
+    if enable_voc:
+        system_prompt = f"{system_prompt}\n\n{load_voc_system_prompt()}"
+
+    user_prompt = (
+        "Tâche: produire en une seule réponse l'analyse QA complète de cet appel.\n"
+        "Tu dois remplir factual_extract, scorecard et voc_extract.\n"
+        "Règles QA:\n"
+        "- factual_extract est factuel uniquement : pas de jugement global.\n"
+        "- scorecard doit être cohérent avec factual_extract et la rubric.\n"
+        "- Chaque positive et improvement_point doit avoir une citation exacte du transcript.\n"
+        "- unanswered_questions liste seulement les questions client non répondues correctement.\n"
+        "- N'ajoute aucun champ hors schéma.\n"
+        "Règles VoC:\n"
+        "- Chaque topic, entity_perception, competitor mention et verbatim doit contenir une quote retrouvable dans le transcript.\n"
+        "- Utilise uniquement la taxonomie fournie. Si besoin, utilise autre_<texte_court> et needs_taxonomy_review=true.\n"
+        "- Limite verbatim_quotes à 5 et best_practice_moments à 3.\n"
+        "- Si VoC est désactivée, mets voc_extract à null.\n"
+        "- Réponds uniquement avec un JSON conforme.\n\n"
+        f"Rubric:\n{rubric.build_rubric_prompt_block()}\n\n"
+        f"Knowledge base:\n{kb_summary}\n\n"
+        f"Taxonomie VoC:\n{voc_taxonomy.taxonomy_prompt_block() if enable_voc else 'VoC désactivée'}\n\n"
+        f"Call payload:\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        f"Schema attendu:\n{json.dumps(schema_hint, ensure_ascii=False, indent=2)}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
 def build_retry_message(error_text: str, schema: dict, invalid_fields: list[str] | None = None) -> str:
     fields_block = ""
     if invalid_fields:
