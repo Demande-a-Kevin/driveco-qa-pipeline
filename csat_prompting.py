@@ -1,6 +1,7 @@
 """csat_prompting.py — Prompt Gemma contraint + parsing du verdict CSAT."""
 from __future__ import annotations
 from dataclasses import dataclass
+import config
 import ollama_client
 
 VERDICTS = {"Agent/Assistance", "Borne/App", "Mixte", "Autre"}
@@ -53,7 +54,10 @@ def _truncate_words(text: str, max_words: int = 55) -> str:
 
 
 def analyze(transcript: str, score: int | None, influence: str, improvements: str) -> Insight:
-    data = ollama_client.generate_json(build_prompt(transcript, score, influence, improvements))
+    data = ollama_client.generate_json(
+        build_prompt(transcript, score, influence, improvements),
+        timeout=config.OLLAMA_ANALYSIS_TIMEOUT,  # éviter un timeout 60s si le modèle est occupé par le batch QA
+    )
     return Insight(
         verdict=_normalize_verdict(data.get("verdict")),
         sentiment=_normalize_sentiment(data.get("sentiment")),
