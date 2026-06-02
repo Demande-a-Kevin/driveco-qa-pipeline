@@ -40,3 +40,8 @@ def test_analyze_truncates_to_55_words(monkeypatch):
     )
     ins = analyze("t", score=1, influence="", improvements="")
     assert len(ins.synthese.split()) <= 55
+
+
+def test_build_prompt_handles_unknown_score():
+    p = csat_prompting.build_prompt("t", score=None, influence="", improvements="")
+    assert "inconnue" in p

@@ -61,3 +61,14 @@ def test_thread_has_bot_reply_false(monkeypatch):
         return _Resp({"ok": True, "messages": [{"ts": "1.0", "user": "U0798UDP7U0"}]})
     monkeypatch.setattr(csat_slack.requests, "get", fake_get)
     assert csat_slack.thread_has_bot_reply("C", "1.0", "U0AMEHDCDV5", token="t") is False
+
+
+def test_fetch_raises_runtimeerror_on_api_error(monkeypatch):
+    import pytest
+    def fake_get(url, params=None, headers=None, timeout=None):
+        class R:
+            def json(self): return {"ok": False, "error": "missing_scope"}
+        return R()
+    monkeypatch.setattr(csat_slack.requests, "get", fake_get)
+    with pytest.raises(RuntimeError):
+        csat_slack.fetch_new_sprig_posts("C", "1.0", "U0798UDP7U0", token="t")

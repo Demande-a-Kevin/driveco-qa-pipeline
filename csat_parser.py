@@ -58,7 +58,7 @@ def parse_sprig(msg: dict) -> CsatPost:
     lines = _quote_lines(text)
     score = None
     raw_score = _answer_after(_QUESTION_LABEL, lines)
-    sm = re.search(r"[1-5]", raw_score)
+    sm = re.fullmatch(r"[1-5]", raw_score.strip())
     if sm:
         score = int(sm.group(0))
     else:

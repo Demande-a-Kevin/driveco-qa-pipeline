@@ -64,3 +64,12 @@ def test_parse_missing_score_is_none():
     post = parse_sprig(msg)
     assert post.call_id == "999999"
     assert post.score is None
+
+
+def test_parse_score_answer_with_extra_text_is_none():
+    msg = {"ts": "1.1", "user": "U0798UDP7U0",
+           "text": ("from <mailto:123456@driveco.com|x>.\n"
+                    "> *Dans quelle mesure notre assistance a-t-elle répondu à vos attentes ?*\n"
+                    "> top 10 fois")}
+    from csat_parser import parse_sprig
+    assert parse_sprig(msg).score is None
