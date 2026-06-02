@@ -88,6 +88,7 @@ AIRCALL_CALL_HISTORY_LINE_IDS = _int_set_env(
         )
     ),
 )
+AIRCALL_RECENT_DIRECT_COMPARE_DAYS = int(os.getenv("AIRCALL_RECENT_DIRECT_COMPARE_DAYS", "2"))
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
@@ -106,6 +107,7 @@ OLLAMA_MODEL_SCREENING  = OLLAMA_FIXED_MODEL
 OLLAMA_MODEL_ANALYSIS   = OLLAMA_FIXED_MODEL
 OLLAMA_TIMEOUT          = int(os.getenv("OLLAMA_TIMEOUT", "60"))
 OLLAMA_ANALYSIS_TIMEOUT = int(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "3600"))
+OLLAMA_PRESCREEN_MODE   = os.getenv("OLLAMA_PRESCREEN_MODE", "heuristic").strip().lower()
 OLLAMA_PRESCREEN_TIMEOUT = int(
     os.getenv(
         "OLLAMA_PRESCREEN_TIMEOUT",
@@ -128,6 +130,10 @@ OLLAMA_NUM_CTX          = _optional_int_env(
     "OLLAMA_NUM_CTX",
     32768 if OLLAMA_FIXED_MODEL.startswith("gemma4") else None,
 )
+OLLAMA_ANALYSIS_ONE_SHOT = os.getenv("OLLAMA_ANALYSIS_ONE_SHOT", "true").strip().lower() in {"1", "true", "yes", "on"}
+OLLAMA_ONE_SHOT_MAX_TOKENS = int(os.getenv("OLLAMA_ONE_SHOT_MAX_TOKENS", "5200"))
+OLLAMA_ONE_SHOT_TIMEOUT = int(os.getenv("OLLAMA_ONE_SHOT_TIMEOUT", "900"))
+OLLAMA_ONE_SHOT_MAX_ATTEMPTS = int(os.getenv("OLLAMA_ONE_SHOT_MAX_ATTEMPTS", "1"))
 OLLAMA_TEMPERATURE      = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 OLLAMA_TOP_P            = float(os.getenv("OLLAMA_TOP_P", "0.95"))
 OLLAMA_TOP_K            = int(os.getenv("OLLAMA_TOP_K", "64"))
@@ -149,6 +155,11 @@ NOTION_REPORTS_PAGE_ID = os.getenv("NOTION_REPORTS_PAGE_ID", "")
 SLACK_BOT_TOKEN     = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID    = os.getenv("SLACK_CHANNEL_ID", "")
 SLACK_VOC_ALERTS_CHANNEL_ID = os.getenv("SLACK_VOC_ALERTS_CHANNEL_ID", SLACK_CHANNEL_ID)
+
+# ── CSAT Call Insight ─────────────────────────────────────────────────────────
+SLACK_CSAT_CHANNEL_ID = os.getenv("SLACK_CSAT_CHANNEL_ID", "C0B724V5X4L")
+SLACK_BOT_USER_ID     = os.getenv("SLACK_BOT_USER_ID", "U0AMEHDCDV5")  # bot Kev1n
+DISABLE_CSAT_INSIGHT  = os.getenv("DISABLE_CSAT_INSIGHT", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Supabase ────────────────────────────────────────────────────────────────
 SUPABASE_URL        = os.getenv("SUPABASE_URL", "")
