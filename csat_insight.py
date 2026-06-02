@@ -92,8 +92,10 @@ def run_once(now_epoch: int | None = None, state_path: Path | None = None) -> No
                     max_ts = str(m["ts"])
         except Exception as exc:  # noqa: BLE001
             log.warning("baseline history KO: %s", exc)
-        baseline_f = max(float(max_ts), float(now_epoch))
-        baseline = str(int(baseline_f)) if baseline_f == int(baseline_f) else str(baseline_f)
+        if float(max_ts) >= now_epoch:
+            baseline = str(max_ts)
+        else:
+            baseline = str(now_epoch)
         csat_state.save_state(state_path, {"last_ts": baseline, "pending": []})
         log.info("Baseline initialisée à %s (go-forward only)", baseline)
         return

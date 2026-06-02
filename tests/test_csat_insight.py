@@ -86,3 +86,14 @@ def test_already_replied_skips(monkeypatch, tmp_path):
     posted = _wire(monkeypatch, history=[_msg("10.0")], has_reply=True)
     csat_insight.run_once(now_epoch=1000, state_path=state_file)
     assert posted == []
+
+
+def test_disabled_flag_short_circuits(monkeypatch, tmp_path):
+    called = {"history": False}
+    def boom(*a, **k):
+        called["history"] = True
+        return []
+    monkeypatch.setattr(csat_insight, "fetch_new_sprig_posts", boom)
+    monkeypatch.setattr(csat_insight.config, "DISABLE_CSAT_INSIGHT", True)
+    csat_insight.run_once(now_epoch=999, state_path=tmp_path / "s.json")
+    assert called["history"] is False
