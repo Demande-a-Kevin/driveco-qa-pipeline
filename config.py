@@ -155,6 +155,11 @@ SLACK_CSAT_CHANNEL_ID = os.getenv("SLACK_CSAT_CHANNEL_ID", "C0B724V5X4L")
 SLACK_BOT_USER_ID     = os.getenv("SLACK_BOT_USER_ID", "U0AMEHDCDV5")  # bot Kev1n
 DISABLE_CSAT_INSIGHT  = os.getenv("DISABLE_CSAT_INSIGHT", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+# ── Sentiment Call Insight (canal UCC sentiment) ──────────────────────────────
+SLACK_SENTIMENT_CHANNEL_ID = os.getenv("SLACK_SENTIMENT_CHANNEL_ID", "C0B7PA2EZQ8")
+DISABLE_SENTIMENT_INSIGHT  = os.getenv("DISABLE_SENTIMENT_INSIGHT", "false").strip().lower() in {"1", "true", "yes", "on"}
+SENTIMENT_INSIGHT_MAX_PER_RUN = int(os.getenv("SENTIMENT_INSIGHT_MAX_PER_RUN", "5"))
+
 # ── Supabase ────────────────────────────────────────────────────────────────
 SUPABASE_URL        = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
