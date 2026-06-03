@@ -38,3 +38,21 @@ def fetch_call_facts(call_id: str) -> dict:
         "direction": call.get("direction"),
         "agent_name": agent_name,
     }
+
+
+def format_facts_line(facts: dict | None) -> str:
+    """Ligne mrkdwn des faits Aircall (partagée CSAT/Sentiment)."""
+    if not facts:
+        return ""
+    bits = []
+    if facts.get("answered"):
+        tta = facts.get("time_to_answer_s")
+        bits.append(f"décroché par un agent{f' après {tta}s' if tta is not None else ''}")
+    else:
+        bits.append("non décroché")
+    dur = facts.get("duration_s")
+    if dur:
+        bits.append(f"durée {int(dur) // 60}min{int(dur) % 60:02d}s")
+    if facts.get("agent_name"):
+        bits.append(str(facts["agent_name"]))
+    return "⏱ " + " · ".join(bits)

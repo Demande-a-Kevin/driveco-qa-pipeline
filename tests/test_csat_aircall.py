@@ -35,3 +35,15 @@ def test_fetch_call_facts_handles_missing_and_errors(monkeypatch):
 
     monkeypatch.setattr(csat_aircall.call_fetcher, "fetch_call_details", boom)
     assert csat_aircall.fetch_call_facts("123") == {}
+
+
+def test_format_facts_line_answered():
+    line = csat_aircall.format_facts_line(
+        {"answered": True, "time_to_answer_s": 38, "duration_s": 288})
+    assert line.startswith("⏱")
+    assert "décroché" in line and "38s" in line and "4min48s" in line
+
+
+def test_format_facts_line_empty():
+    assert csat_aircall.format_facts_line({}) == ""
+    assert csat_aircall.format_facts_line(None) == ""
