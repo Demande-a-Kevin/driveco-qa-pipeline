@@ -55,3 +55,22 @@ def test_analyze_truncates_to_55_words(monkeypatch):
 def test_build_prompt_handles_unknown_score():
     p = csat_prompting.build_prompt("t", score=None, influence="", improvements="")
     assert "inconnue" in p
+
+
+def test_build_prompt_asks_for_station():
+    p = build_prompt("t", 3, "", "")
+    assert '"station"' in p and "invente jamais" in p.lower()
+
+
+def test_analyze_extracts_station(monkeypatch):
+    monkeypatch.setattr(csat_prompting.ollama_client, "generate_json",
+                        lambda *a, **k: {"verdict": "Borne/App", "sentiment": "négatif",
+                                         "station": "Carrefour Rives-sur-Fure borne 4", "synthese": "x"})
+    assert "Carrefour" in analyze("t", 1, "", "").station
+
+
+def test_analyze_station_empty_when_not_mentioned(monkeypatch):
+    monkeypatch.setattr(csat_prompting.ollama_client, "generate_json",
+                        lambda *a, **k: {"verdict": "Autre", "sentiment": "mitigé",
+                                         "station": "non mentionné", "synthese": "x"})
+    assert analyze("t", 4, "", "").station == ""

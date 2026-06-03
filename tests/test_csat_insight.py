@@ -114,3 +114,14 @@ def test_render_without_facts_has_no_facts_line():
     txt = csat_insight._render(ins, "123", 4, None)
     assert "⏱" not in txt
     assert txt.count("\n") == 2  # header + verdict + synthese
+
+
+def test_render_shows_station_line():
+    ins = csat_insight.Insight("Borne/App", "négatif", "x", station="Carrefour Rives 4")
+    txt = csat_insight._render(ins, "123", 1, None)
+    assert "📍 Station : Carrefour Rives 4" in txt
+
+
+def test_render_no_station_line_when_empty():
+    ins = csat_insight.Insight("Autre", "mitigé", "x")
+    assert "📍" not in csat_insight._render(ins, "123", 4, None)

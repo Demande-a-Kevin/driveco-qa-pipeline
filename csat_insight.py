@@ -50,6 +50,8 @@ def _render(insight: Insight, call_id: str, score: int | None, facts: dict | Non
     facts_line = _facts_line(facts)
     if facts_line:
         lines.append(facts_line)
+    if getattr(insight, "station", ""):
+        lines.append(f"📍 Station : {insight.station}")
     lines.append(f"*Verdict : {insight.verdict}* ({insight.sentiment})")
     lines.append(insight.synthese)
     return "\n".join(lines)

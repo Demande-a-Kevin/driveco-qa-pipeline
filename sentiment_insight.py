@@ -46,6 +46,8 @@ def _render(post: SentimentPost, insight: SentimentInsight, facts: dict | None) 
         fl = format_facts_line(facts)
         if fl:
             lines.append(fl)
+    if getattr(insight, "station", ""):
+        lines.append(f"📍 Station : {insight.station}")
     if insight.verdict:
         verdict_bits = [f"*Verdict : {insight.verdict}*"]
         if insight.moment:

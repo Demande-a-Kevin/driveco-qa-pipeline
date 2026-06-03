@@ -105,7 +105,7 @@ OLLAMA_FIXED_MODEL      = os.getenv(
 OLLAMA_MODEL_SCREENING  = OLLAMA_FIXED_MODEL
 OLLAMA_MODEL_ANALYSIS   = OLLAMA_FIXED_MODEL
 OLLAMA_TIMEOUT          = int(os.getenv("OLLAMA_TIMEOUT", "60"))
-OLLAMA_ANALYSIS_TIMEOUT = int(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "3600"))
+OLLAMA_ANALYSIS_TIMEOUT = int(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "600"))
 OLLAMA_PRESCREEN_TIMEOUT = int(
     os.getenv(
         "OLLAMA_PRESCREEN_TIMEOUT",
@@ -128,6 +128,14 @@ OLLAMA_NUM_CTX          = _optional_int_env(
     "OLLAMA_NUM_CTX",
     32768 if OLLAMA_FIXED_MODEL.startswith("gemma4") else None,
 )
+# ── Analyse one-shot (1 appel = factual + scorecard + VoC) ────────────────────
+# Réduit le nombre d'appels Ollama (1 au lieu de 3) → runs plus rapides. Le
+# fallback legacy (3 passes) reste actif si la sortie one-shot est invalide.
+OLLAMA_ANALYSIS_ONE_SHOT = os.getenv("OLLAMA_ANALYSIS_ONE_SHOT", "true").strip().lower() in {"1", "true", "yes", "on"}
+OLLAMA_ONE_SHOT_MAX_TOKENS = int(os.getenv("OLLAMA_ONE_SHOT_MAX_TOKENS", "5200"))
+# Timeout court : un appel pendu échoue vite (→ fallback) au lieu de bloquer 1h.
+OLLAMA_ONE_SHOT_TIMEOUT = int(os.getenv("OLLAMA_ONE_SHOT_TIMEOUT", "300"))
+OLLAMA_ONE_SHOT_MAX_ATTEMPTS = int(os.getenv("OLLAMA_ONE_SHOT_MAX_ATTEMPTS", "1"))
 OLLAMA_TEMPERATURE      = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 OLLAMA_TOP_P            = float(os.getenv("OLLAMA_TOP_P", "0.95"))
 OLLAMA_TOP_K            = int(os.getenv("OLLAMA_TOP_K", "64"))

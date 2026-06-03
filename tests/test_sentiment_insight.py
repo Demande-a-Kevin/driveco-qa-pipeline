@@ -98,3 +98,10 @@ def test_pending_negative_reposts_when_transcript_ready(monkeypatch, tmp_path):
     sentiment_insight.run_once(now_epoch=1000, state_path=sf)
     assert len(posted) == 1 and posted[0][0] == "9.0"
     assert csat_state.load_state(sf)["pending"] == []
+
+
+def test_render_shows_station_line():
+    post = sentiment_insight.SentimentPost("1.0", "123", "negative", {"final_score": -0.6}, "")
+    ins = sentiment_insight.SentimentInsight("Borne/App", "m", "non", "s", station="Saint-Poings borne 2")
+    txt = sentiment_insight._render(post, ins, {"answered": True, "duration_s": 100})
+    assert "📍 Station : Saint-Poings borne 2" in txt
