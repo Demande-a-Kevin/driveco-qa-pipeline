@@ -80,13 +80,13 @@ def _process_post(post: SentimentPost, first_seen: int, attempts: int, now_epoch
     if thread_has_bot_reply(channel, post.ts, bot_id):
         return "done"
     transcript = fetch_transcript(post.call_id)
-    facts = fetch_call_facts(post.call_id)
     if post.kind == "negative" and not transcript:
         budget_done = attempts + 1 >= PENDING_MAX_ATTEMPTS or (now_epoch - first_seen) > PENDING_MAX_AGE_S
         if budget_done:
             post_thread(channel, post.ts, _render_link_only(post))
             return "done"
         return "pending"
+    facts = fetch_call_facts(post.call_id)
     insight = analyze(post.kind, transcript or "", facts, post.scores)
     post_thread(channel, post.ts, _render(post, insight, facts))
     return "done"
@@ -113,6 +113,7 @@ def run_once(now_epoch: int | None = None, state_path: Path | None = None) -> No
                     max_ts = str(m["ts"])
         except Exception as exc:  # noqa: BLE001
             log.warning("baseline history KO: %s", exc)
+        # pin à maintenant si l'historique est plus ancien (évite tout backfill)
         baseline = max_ts if float(max_ts) >= now_epoch else str(now_epoch)
         csat_state.save_state(state_path, {"last_ts": baseline, "pending": []})
         log.info("Baseline initialisée à %s (go-forward only)", baseline)

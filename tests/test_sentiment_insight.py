@@ -87,3 +87,14 @@ def test_already_replied_skips(monkeypatch, tmp_path):
     posted = _wire(monkeypatch, posts=[_neg("10.0")], has_reply=True)
     sentiment_insight.run_once(now_epoch=1000, state_path=sf)
     assert posted == []
+
+
+def test_pending_negative_reposts_when_transcript_ready(monkeypatch, tmp_path):
+    sf = tmp_path / "s.json"
+    csat_state.save_state(sf, {"last_ts": "20.0", "pending": [
+        {"ts": "9.0", "call_id": "3827871596", "kind": "negative",
+         "scores": {"final_score": -0.6}, "first_seen": 0, "attempts": 1}]})
+    posted = _wire(monkeypatch, posts=[], transcript="Agent: bonjour")
+    sentiment_insight.run_once(now_epoch=1000, state_path=sf)
+    assert len(posted) == 1 and posted[0][0] == "9.0"
+    assert csat_state.load_state(sf)["pending"] == []
