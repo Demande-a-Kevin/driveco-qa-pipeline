@@ -50,3 +50,19 @@ def test_analyze_synthese_truncated(monkeypatch):
                                          "recoverable": "oui", "synthese": long})
     ins = analyze("negative", "t", {}, None)
     assert len(ins.synthese.split()) <= 50
+
+
+def test_build_prompt_asks_for_station():
+    p = build_prompt("negative", "t", {}, None)
+    assert '"station"' in p and "invente jamais" in p.lower()
+
+
+def test_analyze_extracts_station(monkeypatch):
+    monkeypatch.setattr(sentiment_prompting.ollama_client, "generate_json",
+                        lambda *a, **k: {"verdict": "Borne/App", "moment": "m", "recoverable": "non",
+                                         "station": "Saint-Poings borne 2", "synthese": "s"})
+    assert "Saint-Poings" in analyze("negative", "t", {}, None).station
+
+
+def test_deterministic_unanswered_has_no_station():
+    assert analyze("unanswered", "", {"answered": False, "direction": "inbound"}, None).station == ""

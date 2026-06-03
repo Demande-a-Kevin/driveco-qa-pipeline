@@ -15,6 +15,7 @@ class SentimentInsight:
     moment: str
     recoverable: str   # 'oui'|'non'|'partiel'|''
     synthese: str
+    station: str = ""
 
 
 def _trajectory_txt(scores: dict | None) -> str:
@@ -42,10 +43,11 @@ Transcript de l'appel :
 {transcript}
 \"\"\"
 
-Réponds STRICTEMENT en JSON : {{"verdict": "...", "moment": "...", "recoverable": "...", "synthese": "..."}}
+Réponds STRICTEMENT en JSON : {{"verdict": "...", "moment": "...", "recoverable": "...", "station": "...", "synthese": "..."}}
 - "verdict" parmi exactement : "Agent/Assistance", "Borne/App", "Mixte", "Autre" (le côté dominant du motif).
 - "moment" : courte phrase sur ce qui a fait basculer (ex. "échec paiement répété ~8min"). <= 12 mots.
 - "recoverable" parmi exactement : "oui", "non", "partiel" (la situation a-t-elle été rattrapée ?).
+- "station" : la station/borne/lieu de recharge explicitement cité par le client ; chaîne VIDE si non mentionné — n'invente jamais.
 - "synthese" : 50 mots MAXIMUM, 2-3 lignes, en français. Pas de liste, pas de note /10, pas de reco.
   Si le transcript est trop dégradé pour conclure, dis-le sans inventer."""
 
@@ -65,6 +67,13 @@ def _truncate(text: str, max_words: int = 50) -> str:
     if len(words) <= max_words:
         return str(text or "").strip()
     return " ".join(words[:max_words]).rstrip(" .,;") + "…"
+
+
+def _clean_station(value: str) -> str:
+    s = " ".join(str(value or "").split())
+    if s.lower() in {"", "non mentionné", "non mentionnée", "inconnu", "inconnue", "n/a", "none", "null"}:
+        return ""
+    return " ".join(s.split()[:12])
 
 
 def _deterministic_unanswered(facts: dict | None) -> SentimentInsight:
@@ -91,4 +100,5 @@ def analyze(kind: str, transcript: str, facts: dict | None, scores: dict | None)
         moment=_truncate(data.get("moment"), 12),
         recoverable=_norm_recoverable(data.get("recoverable")),
         synthese=_truncate(data.get("synthese"), 50),
+        station=_clean_station(data.get("station")),
     )
