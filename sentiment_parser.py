@@ -32,13 +32,13 @@ def _flatten(msg: dict) -> str:
 def _parse_scores(text: str) -> dict:
     scores: dict = {}
     json_ok = False
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
+    for m in re.finditer(r"\{[^{}]+\}", text, re.DOTALL):
         try:
             scores = json.loads(m.group(0))
             json_ok = True
+            break
         except (ValueError, TypeError):
-            scores = {}
+            continue
     headline = re.search(r"Score\s*\[-1 to \+1\]\s*:\s*(-?\d+(?:\.\d+)?)", text)
     if headline and json_ok:
         scores.setdefault("headline_score", float(headline.group(1)))

@@ -46,4 +46,16 @@ def test_parse_negative_with_broken_json_keeps_callid():
     p = parse_pingouin(msg)
     assert p.call_id == "111111"
     assert p.kind == "negative"
-    assert p.scores == {} or p.scores is None
+    assert p.scores == {}
+
+
+def test_parse_negative_ignores_trailing_brace_block():
+    from sentiment_parser import parse_pingouin
+    msg = {"ts": "5.0", "bot_id": "B0B6V282D5Y", "text": (
+        "Access link : <https://assets.aircall.io/calls/222222/recording/info>\n"
+        "Score [-1 to +1] : -0.8 (confidance : 90%)\n"
+        '{ "final_score": -0.8, "label": "neg" }\n*Note:* {action}')}
+    p = parse_pingouin(msg)
+    assert p.call_id == "222222"
+    assert p.scores["final_score"] == -0.8
+    assert p.scores["label"] == "neg"

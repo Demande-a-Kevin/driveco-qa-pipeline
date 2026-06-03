@@ -88,7 +88,7 @@ def analyze(kind: str, transcript: str, facts: dict | None, scores: dict | None)
     )
     return SentimentInsight(
         verdict=_norm_verdict(data.get("verdict")),
-        moment=_truncate(data.get("moment"), 14),
+        moment=_truncate(data.get("moment"), 12),
         recoverable=_norm_recoverable(data.get("recoverable")),
         synthese=_truncate(data.get("synthese"), 50),
     )
