@@ -369,6 +369,11 @@ def _heuristic_prescreen(call: dict) -> tuple[float, str]:
     return min(score, 10.0), "score heuristique (Ollama indisponible)"
 
 
+def heuristic_prescreen_call(call: dict) -> tuple[float, str]:
+    """Wrapper public du pré-screening heuristique (utilisé par run_prescreening)."""
+    return _heuristic_prescreen(call)
+
+
 def _normalize_risk_value(value, default: float = 5.0) -> float:
     if isinstance(value, (int, float)):
         return float(value)

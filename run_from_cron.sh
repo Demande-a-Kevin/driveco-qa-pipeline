@@ -237,9 +237,9 @@ else
   log_line "done mode=$MODE reason=$RUN_REASON exit=$exit_code"
   write_status "failed" "exit=$exit_code"
   if [ "$MODE" = "daily" ]; then
-    send_alert "critical" "Pipeline QA daily en échec (${RUN_REASON}) avec exit=${exit_code}. Vérifie le log cron_daily.log sur le Mac."
+    send_alert "critical" "Pipeline QA daily en échec (${RUN_REASON}) avec exit=${exit_code}. Voir le log cron_daily.log."
   elif [ "$MODE" = "reliability" ]; then
-    send_alert "critical" "Pipeline QA reliability en échec (${RUN_REASON}) avec exit=${exit_code}. Vérifie le log cron_reliability.log sur le Mac."
+    send_alert "critical" "Pipeline QA reliability en échec (${RUN_REASON}) avec exit=${exit_code}. Voir le log cron_reliability.log."
   fi
   exit "$exit_code"
 fi

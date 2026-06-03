@@ -141,6 +141,15 @@ class DailyCapTest(unittest.TestCase):
         )
         self.assertEqual(len(selected), 15)  # 75% de 20
 
+    def test_heuristic_prescreen_call_public_wrapper(self):
+        # Contrat public consommé par analysis_pipeline.run_prescreening (mode heuristique).
+        # Sa disparition avait fait planter le run daily (AttributeError).
+        risk, reason = ollama_client.heuristic_prescreen_call(
+            {"answered": "No", "duration_in_call": 10, "tags": ""}
+        )
+        self.assertIsInstance(risk, float)
+        self.assertIsInstance(reason, str)
+
 
 if __name__ == "__main__":
     unittest.main()
