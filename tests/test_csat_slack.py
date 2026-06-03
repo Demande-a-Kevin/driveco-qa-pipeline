@@ -72,3 +72,25 @@ def test_fetch_raises_runtimeerror_on_api_error(monkeypatch):
     monkeypatch.setattr(csat_slack.requests, "get", fake_get)
     with pytest.raises(RuntimeError):
         csat_slack.fetch_new_sprig_posts("C", "1.0", "U0798UDP7U0", token="t")
+
+
+def test_fetch_by_author_matches_bot_id(monkeypatch):
+    def fake_get(url, params=None, headers=None, timeout=None):
+        return _Resp({"ok": True, "messages": [
+            {"ts": "3.0", "bot_id": "B0B6V282D5Y", "text": "x"},
+            {"ts": "2.5", "user": "UOTHER", "text": "bruit"},
+        ]})
+    monkeypatch.setattr(csat_slack.requests, "get", fake_get)
+    msgs = csat_slack.fetch_new_posts_by_author("C", oldest="1.0",
+                                                author_id="B0B6V282D5Y", token="t")
+    assert [m["ts"] for m in msgs] == ["3.0"]
+
+
+def test_fetch_by_author_matches_user(monkeypatch):
+    def fake_get(url, params=None, headers=None, timeout=None):
+        return _Resp({"ok": True, "messages": [
+            {"ts": "3.0", "user": "U0798UDP7U0", "text": "x"}]})
+    monkeypatch.setattr(csat_slack.requests, "get", fake_get)
+    msgs = csat_slack.fetch_new_posts_by_author("C", oldest="1.0",
+                                                author_id="U0798UDP7U0", token="t")
+    assert [m["ts"] for m in msgs] == ["3.0"]

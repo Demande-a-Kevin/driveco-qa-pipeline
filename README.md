@@ -9,6 +9,7 @@ Pipeline Python d'analyse qualité des appels Driveco. Tourne en autonomie sur u
 - Extrait la voix du client (VoC) séparément
 - Publie un rapport : **un seul post Slack** + Markdown local + Notion + Obsidian
 - **CSAT Call Insight** — répond automatiquement en thread sous chaque post CSAT Sprig avec le lien transcript Aircall + verdict Gemma (agent vs borne/app, ≤ 55 mots), toutes les 3 min via launchd
+- **Sentiment Call Insight** — répond automatiquement en thread sous chaque post du bot Captain Pingouin (`#ucc-sentiment-analysis-ai`) avec verdict/moment/rattrapable pour les appels négatifs, ou analyse adaptative pour les non-répondus, toutes les 3 min via launchd
 
 ## Documentation
 
@@ -191,6 +192,9 @@ csat_parser.py          # Parsing posts Sprig → CsatPost
 csat_prompting.py       # Prompt Gemma + verdict normalisé (≤ 55 mots)
 csat_slack.py           # I/O Slack : historique canal CSAT, post thread, dédup
 csat_state.py           # Persistance JSON de l'état CSAT (last_ts + pending)
+sentiment_insight.py    # Sentiment Call Insight — orchestration (launchd toutes les 3 min)
+sentiment_parser.py     # Parsing posts Captain Pingouin → SentimentPost
+sentiment_prompting.py  # Prompt Gemma adaptatif (négatif LLM / non-répondu déterministe)
 setup_launchd.sh        # Installation runtime + plists launchd
 sync_launchd_runtime.sh # Sync repo source → runtime launchd
 run_from_cron.sh        # Wrapper de lancement (lock, log, état)
