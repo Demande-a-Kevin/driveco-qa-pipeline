@@ -12,9 +12,9 @@ def _token(token: str | None) -> str:
     return token or config.SLACK_BOT_TOKEN
 
 
-def fetch_new_sprig_posts(channel: str, oldest: str, sprig_user_id: str,
-                          token: str | None = None, limit: int = 30) -> list[dict]:
-    """Messages du bot Sprig avec ts > oldest (oldest exclu), ordre chronologique."""
+def fetch_new_posts_by_author(channel: str, oldest: str, author_id: str,
+                              token: str | None = None, limit: int = 100) -> list[dict]:
+    """Messages d'un auteur (user OU bot_id) avec ts > oldest, ordre chronologique."""
     try:
         resp = requests.get(
             _HISTORY_URL,
@@ -29,10 +29,17 @@ def fetch_new_sprig_posts(channel: str, oldest: str, sprig_user_id: str,
         raise RuntimeError(f"conversations.history: {data.get('error')}")
     msgs = [
         m for m in data.get("messages", [])
-        if m.get("user") == sprig_user_id and str(m.get("ts")) != str(oldest)
+        if (m.get("user") == author_id or m.get("bot_id") == author_id)
+        and str(m.get("ts")) != str(oldest)
     ]
     msgs.sort(key=lambda m: float(m["ts"]))
     return msgs
+
+
+def fetch_new_sprig_posts(channel: str, oldest: str, sprig_user_id: str,
+                          token: str | None = None, limit: int = 30) -> list[dict]:
+    """Compat CSAT : délègue au filtre générique par auteur."""
+    return fetch_new_posts_by_author(channel, oldest, sprig_user_id, token=token, limit=limit)
 
 
 def thread_has_bot_reply(channel: str, thread_ts: str, bot_user_id: str,
