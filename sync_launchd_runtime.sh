@@ -27,6 +27,8 @@ rsync -a \
   --exclude '__pycache__/' \
   --exclude '.pytest_cache/' \
   --exclude '.DS_Store' \
+  --exclude '.csat_insight_state.json' \
+  --exclude '.sentiment_insight_state.json' \
   "$PIPELINE_DIR/" "$RUNTIME_DIR/"
 
 mkdir -p \
