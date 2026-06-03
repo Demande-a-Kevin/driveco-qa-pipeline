@@ -356,6 +356,63 @@ cd "$HOME/Library/Application Support/driveco-qa-pipeline/runtime"
 
 ---
 
+## Sentiment Call Insight
+
+**But :** Répondre automatiquement en thread sous chaque post du bot Captain Pingouin dans le canal `#ucc-sentiment-analysis-ai`, avec une analyse Gemma de 4-5 lignes. Pour les appels à score négatif : verdict (Agent/Assistance · Borne/App · Mixte · Autre), moment clé, et si la situation était rattrapable. Pour les appels « non répondus » : analyse adaptative (LLM si transcript disponible, déterministe sinon) + signalement d'incohérence si Aircall indique un décrochage.
+
+**Label launchd :** `com.kev1n.driveco.sentiment-insight`
+
+**Intervalle :** 180 s (StartInterval, pas CalendarInterval — démarre au boot + toutes les 3 min)
+
+**Logs :**
+
+| Fichier | Contenu |
+|---------|---------|
+| `sentiment-insight.log` | stdout — logs INFO du pipeline |
+| `sentiment-insight.err.log` | stderr — erreurs Python non capturées |
+
+Dans `~/Library/Application Support/driveco-qa-pipeline/runtime/qa-driveco-data/logs/`.
+
+**Kill-switch :** `DISABLE_SENTIMENT_INSIGHT=true` dans `.env` (ou en variable d'env) désactive toutes les passes sans toucher au fichier d'état.
+
+**Cap anti-saturation Ollama :** `SENTIMENT_INSIGHT_MAX_PER_RUN` (défaut 5) — nombre max de nouveaux posts traités par passe. Les posts non traités restent en attente pour la passe suivante.
+
+**Fichier d'état :** `.sentiment_insight_state.json` dans le répertoire runtime (non versionné).
+- Présent → reprend depuis le dernier `last_ts` connu.
+- Absent → au prochain run, initialise la baseline au timestamp courant (go-forward uniquement, pas de backfill de l'historique Slack).
+- Supprimer le fichier = ré-initialiser la baseline = ignorer tous les posts antérieurs.
+
+**Prérequis scope Slack :** le bot Kev1n doit avoir les scopes `channels:history` et `chat:write`. Ces deux scopes sont déjà accordés au bot. Si une erreur `missing_scope` apparaît dans les logs, réinstaller l'app Slack depuis le portail développeur Slack.
+
+**Aller en prod (go-live) :**
+
+1. S'assurer que `.sentiment_insight_state.json` n'existe PAS dans le runtime (premier run posera la baseline).
+2. Synchroniser le runtime et (re)charger les jobs :
+   ```bash
+   cd "/Users/kev1n/Desktop/Kev1n IA/Codex/driveco-qa-pipeline"
+   bash sync_launchd_runtime.sh
+   bash setup_launchd.sh
+   ```
+3. Vérifier que le job est chargé :
+   ```bash
+   launchctl list | grep sentiment-insight
+   ```
+4. Forcer un premier run pour poser la baseline (sans poster) :
+   ```bash
+   cd "$HOME/Library/Application Support/driveco-qa-pipeline/runtime"
+   .venv/bin/python sentiment_insight.py
+   # Doit logger : Baseline initialisée à <ts>
+   ```
+
+**Forcer un run manuel :**
+
+```bash
+cd "$HOME/Library/Application Support/driveco-qa-pipeline/runtime"
+.venv/bin/python sentiment_insight.py
+```
+
+---
+
 ## Configuration depuis le cockpit (depuis 2026-05-07)
 
 Depuis l'intégration QA UCC dans le cockpit, la config (rubric, prompt, sampling)
