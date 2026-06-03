@@ -2,6 +2,16 @@ import csat_prompting
 from csat_prompting import build_prompt, analyze, Insight
 
 
+def test_build_prompt_includes_aircall_facts():
+    p = build_prompt("t", 2, "", "", facts={
+        "answered": True, "time_to_answer_s": 38, "duration_s": 288, "direction": "outbound"})
+    assert "décroché par un agent après 38s" in p
+
+
+def test_build_prompt_facts_none_says_unavailable():
+    assert "non disponibles" in build_prompt("t", 2, "", "")
+
+
 def test_build_prompt_contains_constraints_and_transcript():
     p = build_prompt("Agent: bonjour\nClient: ma borne est HS", score=2,
                      influence="agent sympa", improvements="borne HS")

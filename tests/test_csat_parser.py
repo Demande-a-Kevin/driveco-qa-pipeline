@@ -1,5 +1,26 @@
 from csat_parser import parse_sprig, CsatPost
 
+
+def test_parse_handles_html_escaped_text_from_slack_api():
+    # conversations.history renvoie le texte avec entités HTML (&gt; pour les
+    # blockquotes). Sans html.unescape, le score n'était jamais extrait → "?/5".
+    msg = {
+        "ts": "1.0",
+        "user": "U0798UDP7U0",
+        "text": (
+            "<https://app.sprig.com/x|*CSAT*> received a new response from "
+            "<mailto:3826839572@driveco.com|3826839572@driveco.com>. "
+            "&gt; *Dans quelle mesure notre assistance a-t-elle répondu à vos attentes ?*\n"
+            "&gt; 1\n&gt;\n&gt; *Quelles améliorations suggéreriez-vous ?*\n"
+            "&gt; Aucune réponse à mon appel.\n&gt;\n Bouton View response"
+        ),
+    }
+    post = parse_sprig(msg)
+    assert post.call_id == "3826839572"
+    assert post.score == 1
+    assert "Aucune réponse" in post.improvements
+
+
 # Message réel observé (texte API mrkdwn, blockquotes en lignes ">")
 MSG_WITH_ID = {
     "ts": "1780404011.283339",

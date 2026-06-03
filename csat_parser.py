@@ -1,6 +1,7 @@
 """csat_parser.py — Parsing pur d'un message Slack du bot Sprig en CsatPost."""
 from __future__ import annotations
 from dataclasses import dataclass
+import html
 import re
 
 _CALL_ID_RE = re.compile(r"(\d{6,})@driveco\.com")
@@ -28,7 +29,10 @@ def _flatten_message_text(msg: dict) -> str:
         txt = (block.get("text") or {})
         if isinstance(txt, dict) and txt.get("text"):
             parts.append(txt["text"])
-    return "\n".join(parts)
+    # L'API Slack renvoie le texte avec entités HTML échappées (&gt; pour les
+    # blockquotes, &amp;, &lt;). On les décode pour que _quote_lines retrouve les
+    # lignes « > … » du sondage Sprig (sinon le score n'est jamais extrait).
+    return html.unescape("\n".join(parts))
 
 
 def _quote_lines(text: str) -> list[str]:

@@ -13,6 +13,7 @@ def _wire(monkeypatch, *, history=None, transcript="Agent: bonjour", has_reply=F
     monkeypatch.setattr(csat_insight, "fetch_new_sprig_posts",
                         lambda *a, **k: list(history or []))
     monkeypatch.setattr(csat_insight, "fetch_transcript", lambda call_id: transcript)
+    monkeypatch.setattr(csat_insight, "fetch_call_facts", lambda call_id: {})
     monkeypatch.setattr(csat_insight, "thread_has_bot_reply", lambda *a, **k: has_reply)
     monkeypatch.setattr(csat_insight, "analyze",
                         lambda *a, **k: csat_insight.Insight("Borne/App", "mitigé", "Borne HS."))
@@ -97,3 +98,19 @@ def test_disabled_flag_short_circuits(monkeypatch, tmp_path):
     monkeypatch.setattr(csat_insight.config, "DISABLE_CSAT_INSIGHT", True)
     csat_insight.run_once(now_epoch=999, state_path=tmp_path / "s.json")
     assert called["history"] is False
+
+
+def test_render_includes_aircall_facts_line():
+    ins = csat_insight.Insight("Borne/App", "négatif", "Borne HS.")
+    txt = csat_insight._render(ins, "3826839572", 1,
+                               {"answered": True, "time_to_answer_s": 38, "duration_s": 288})
+    assert "CSAT 1/5" in txt
+    assert "⏱" in txt and "38s" in txt
+    assert "Verdict : Borne/App" in txt
+
+
+def test_render_without_facts_has_no_facts_line():
+    ins = csat_insight.Insight("Autre", "mitigé", "x")
+    txt = csat_insight._render(ins, "123", 4, None)
+    assert "⏱" not in txt
+    assert txt.count("\n") == 2  # header + verdict + synthese

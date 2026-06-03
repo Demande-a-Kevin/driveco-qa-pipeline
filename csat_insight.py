@@ -6,6 +6,7 @@ import time
 
 import config
 from call_fetcher import fetch_transcript
+from csat_aircall import fetch_call_facts
 from csat_parser import parse_sprig, CsatPost
 from csat_prompting import analyze, Insight
 from csat_slack import fetch_new_sprig_posts, thread_has_bot_reply, post_thread
@@ -24,12 +25,34 @@ def _transcript_link(call_id: str) -> str:
     return f"{_ASSET_BASE}/{call_id}/recording/info"
 
 
-def _render(insight: Insight, call_id: str, score: int | None) -> str:
+def _facts_line(facts: dict | None) -> str:
+    """Ligne de faits Aircall (attente avant décrochage, décroché ou non)."""
+    if not facts:
+        return ""
+    bits = []
+    if facts.get("answered"):
+        tta = facts.get("time_to_answer_s")
+        bits.append(f"décroché par un agent{f' après {tta}s' if tta is not None else ''}")
+    else:
+        bits.append("non décroché")
+    dur = facts.get("duration_s")
+    if dur:
+        bits.append(f"durée {int(dur) // 60}min{int(dur) % 60:02d}s")
+    if facts.get("agent_name"):
+        bits.append(str(facts["agent_name"]))
+    return "⏱ " + " · ".join(bits)
+
+
+def _render(insight: Insight, call_id: str, score: int | None, facts: dict | None = None) -> str:
     score_txt = f"{score}/5" if score is not None else "?/5"
     link = f"<{_transcript_link(call_id)}|transcript>"
-    return (f"🔎 *Analyse appel* · CSAT {score_txt} · {link}\n"
-            f"*Verdict : {insight.verdict}* ({insight.sentiment})\n"
-            f"{insight.synthese}")
+    lines = [f"🔎 *Analyse appel* · CSAT {score_txt} · {link}"]
+    facts_line = _facts_line(facts)
+    if facts_line:
+        lines.append(facts_line)
+    lines.append(f"*Verdict : {insight.verdict}* ({insight.sentiment})")
+    lines.append(insight.synthese)
+    return "\n".join(lines)
 
 
 def _render_link_only(call_id: str, score: int | None) -> str:
@@ -65,8 +88,9 @@ def _process_post(post: CsatPost, first_seen: int, attempts: int, now_epoch: int
             post_thread(channel, post.ts, _render_link_only(post.call_id, post.score))
             return "done"
         return "pending"
-    insight = analyze(transcript, post.score, post.influence, post.improvements)
-    post_thread(channel, post.ts, _render(insight, post.call_id, post.score))
+    facts = fetch_call_facts(post.call_id)
+    insight = analyze(transcript, post.score, post.influence, post.improvements, facts)
+    post_thread(channel, post.ts, _render(insight, post.call_id, post.score, facts))
     return "done"
 
 

@@ -15,11 +15,33 @@ class Insight:
     synthese: str
 
 
-def build_prompt(transcript: str, score: int | None, influence: str, improvements: str) -> str:
+def _facts_block(facts: dict | None) -> str:
+    if not facts:
+        return "Faits Aircall : non disponibles."
+    parts = []
+    if facts.get("answered"):
+        tta = facts.get("time_to_answer_s")
+        wait = f" après {tta}s d'attente" if tta is not None else ""
+        parts.append(f"appel décroché par un agent{wait}")
+    else:
+        parts.append("appel NON décroché (personne n'a répondu)")
+    dur = facts.get("duration_s")
+    if dur:
+        parts.append(f"durée {int(dur)}s")
+    if facts.get("direction"):
+        parts.append(f"sens {facts['direction']}")
+    if facts.get("agent_name"):
+        parts.append(f"agent {facts['agent_name']}")
+    return "Faits Aircall : " + ", ".join(parts) + "."
+
+
+def build_prompt(transcript: str, score: int | None, influence: str, improvements: str,
+                 facts: dict | None = None) -> str:
     score_txt = f"{score}/5" if score is not None else "inconnue"
     return f"""Tu analyses un appel d'assistance Driveco (recharge de véhicules électriques).
 Le client a donné une note CSAT de {score_txt}.
 Réponses du client au sondage — influence: "{influence}" ; améliorations: "{improvements}".
+{_facts_block(facts)}
 
 Transcript de l'appel :
 \"\"\"
@@ -27,6 +49,7 @@ Transcript de l'appel :
 \"\"\"
 
 Explique en UNE seule fois pourquoi cette note, et de quel côté vient le motif dominant.
+Tiens compte des faits Aircall (attente avant décrochage, appel réellement décroché ou non par un agent) s'ils éclairent la note.
 Réponds STRICTEMENT en JSON : {{"verdict": "...", "sentiment": "...", "synthese": "..."}}
 - "verdict" parmi exactement : "Agent/Assistance", "Borne/App", "Mixte", "Autre".
   Tranche un côté dominant ; n'utilise "Mixte" que si les deux pèsent vraiment à parts égales.
@@ -53,9 +76,10 @@ def _truncate_words(text: str, max_words: int = 55) -> str:
     return " ".join(words[:max_words]).rstrip(" .,;") + "…"
 
 
-def analyze(transcript: str, score: int | None, influence: str, improvements: str) -> Insight:
+def analyze(transcript: str, score: int | None, influence: str, improvements: str,
+            facts: dict | None = None) -> Insight:
     data = ollama_client.generate_json(
-        build_prompt(transcript, score, influence, improvements),
+        build_prompt(transcript, score, influence, improvements, facts),
         timeout=config.OLLAMA_ANALYSIS_TIMEOUT,  # éviter un timeout 60s si le modèle est occupé par le batch QA
     )
     return Insight(
