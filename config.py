@@ -100,7 +100,7 @@ MODEL_REPORTING     = "claude-sonnet-4-6"
 OLLAMA_BASE_URL         = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_FIXED_MODEL      = os.getenv(
     "OLLAMA_FIXED_MODEL",
-    os.getenv("OLLAMA_MODEL_ANALYSIS") or os.getenv("OLLAMA_MODEL_SCREENING") or "gemma4:latest",
+    os.getenv("OLLAMA_MODEL_ANALYSIS") or os.getenv("OLLAMA_MODEL_SCREENING") or "gemma4:12b",
 )
 OLLAMA_MODEL_SCREENING  = OLLAMA_FIXED_MODEL
 OLLAMA_MODEL_ANALYSIS   = OLLAMA_FIXED_MODEL
@@ -232,7 +232,7 @@ LLM_CACHE_ENABLED = os.getenv("LLM_CACHE_ENABLED", "true").strip().lower() in {"
 # Version du prompt QA : à bumper manuellement quand on modifie
 # qa_prompting.build_extraction_messages / build_scoring_messages / build_voc_messages
 # ou le schéma CallEvaluation. Invalide le cache en douceur.
-LLM_ANALYSIS_CACHE_VERSION = os.getenv("LLM_ANALYSIS_CACHE_VERSION", "v1")
+LLM_ANALYSIS_CACHE_VERSION = os.getenv("LLM_ANALYSIS_CACHE_VERSION", "v2")
 LONG_CALL_THRESHOLD_SECONDS = int(os.getenv("LONG_CALL_THRESHOLD_SECONDS", "900"))
 PEAK_WINDOW_SECONDS         = int(os.getenv("PEAK_WINDOW_SECONDS", "7200"))
 PEAK_WINDOWS_TOP_N          = int(os.getenv("PEAK_WINDOWS_TOP_N", "3"))
