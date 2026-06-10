@@ -822,7 +822,7 @@ def send_alert(message: str, level: str = "warning") -> bool:
             "text": {"type": "mrkdwn", "text": message},
         },
     ]
-    return _post_to_slack(blocks, text=f"ALERTE : {message}")
+    return _post_to_slack(blocks, text=f"ALERTE : {message}", channel=config.SLACK_ALERT_CHANNEL_ID)
 
 
 def send_voc_alerts(analysis: dict, mode: str, date: datetime) -> bool:

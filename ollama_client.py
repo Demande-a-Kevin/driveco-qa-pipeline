@@ -208,6 +208,7 @@ def _ensure_batch_stats(stats: dict | None) -> dict | None:
     stats.setdefault("retries_used", 0)
     stats.setdefault("one_shot_successes", 0)
     stats.setdefault("one_shot_fallbacks", 0)
+    stats.setdefault("one_shot_voc_repairs", 0)
     stats.setdefault("legacy_analysis_calls", 0)
     stats.setdefault("failure_reasons", {})
     return stats
@@ -272,6 +273,23 @@ def _payload_from_evaluation(evaluation: schemas.CallEvaluation) -> dict:
     return payload
 
 
+def _repair_missing_voc(call: dict, scorecard: schemas.CriterionScorecard, stats: dict | None = None) -> schemas.VoCExtract:
+    if stats is not None:
+        stats["one_shot_voc_repairs"] = stats.get("one_shot_voc_repairs", 0) + 1
+    provisional_score = rubric.compute_weighted_score(scorecard.score_map())
+    log.warning(
+        "[ollama one-shot] VoC manquante -> réparation VoC dédiée call_id=%s",
+        _call_id_for_log(call),
+    )
+    return _validated_chat(
+        qa_prompting.build_voc_messages(call, score_global=provisional_score),
+        schemas.VoCExtract,
+        max_tokens=1800,
+        timeout=config.OLLAMA_ANALYSIS_TIMEOUT,
+        stats=stats,
+    )
+
+
 def _analyze_single_call_one_shot(call: dict, kb_summary: str, stats: dict | None = None) -> dict:
     analysis = _validated_chat(
         qa_prompting.build_one_shot_messages(call, kb_summary, enable_voc=config.ENABLE_VOC_ANALYSIS),
@@ -281,14 +299,15 @@ def _analyze_single_call_one_shot(call: dict, kb_summary: str, stats: dict | Non
         stats=stats,
         max_attempts=max(1, config.OLLAMA_ONE_SHOT_MAX_ATTEMPTS),
     )
+    voc_extract = analysis.voc_extract if config.ENABLE_VOC_ANALYSIS else None
     if config.ENABLE_VOC_ANALYSIS and analysis.voc_extract is None:
-        raise ValueError("one_shot_voc_missing")
+        voc_extract = _repair_missing_voc(call, analysis.scorecard, stats=stats)
     evaluation = schemas.build_call_evaluation(
         call=call,
         factual_extract=analysis.factual_extract,
         scorecard=analysis.scorecard,
         model_name=config.OLLAMA_MODEL_ANALYSIS,
-        voc_extract=analysis.voc_extract if config.ENABLE_VOC_ANALYSIS else None,
+        voc_extract=voc_extract,
     )
     if stats is not None:
         stats["one_shot_successes"] += 1
@@ -349,6 +368,8 @@ def _analyze_single_call(call: dict, kb_summary: str, stats: dict | None = None)
         except Exception as exc:  # noqa: BLE001
             if stats is not None:
                 stats["one_shot_fallbacks"] += 1
+            if not getattr(config, "OLLAMA_LEGACY_FALLBACK_ON_ONE_SHOT_FAILURE", False):
+                raise
             log.warning(
                 "[ollama one-shot] fallback legacy call_id=%s (%s)",
                 _call_id_for_log(call),

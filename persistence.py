@@ -906,6 +906,40 @@ def fetch_raw_evaluations_by_call_ids(call_ids: list[str]) -> dict[str, dict]:
     return result
 
 
+def fetch_transcripts_by_call_ids(call_ids: list[str]) -> dict[str, str]:
+    """Retourne `{call_id: transcript_text}` pour les transcripts déjà persistés."""
+    if not call_ids or not is_enabled():
+        return {}
+    client_ = client()
+    if not client_:
+        return {}
+    unique_ids = list({cid for cid in call_ids if cid})
+    if not unique_ids:
+        return {}
+    result: dict[str, str] = {}
+    chunk = 100
+    try:
+        for i in range(0, len(unique_ids), chunk):
+            batch = unique_ids[i:i + chunk]
+            rows = (
+                client_.table("transcripts")
+                .select("call_id,text")
+                .in_("call_id", batch)
+                .execute()
+                .data
+                or []
+            )
+            for row in rows:
+                text = str(row.get("text") or "").strip()
+                call_id = str(row.get("call_id") or "").strip()
+                if call_id and text:
+                    result[call_id] = text
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[persistence] fetch_transcripts_by_call_ids KO: %s", exc)
+        return {}
+    return result
+
+
 def fetch_recent_anomaly_events(limit: int = 20) -> list[dict]:
     return _execute_select("anomaly_events", columns="*", limit=limit, order=("created_at", True))
 

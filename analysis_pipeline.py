@@ -51,6 +51,7 @@ import report_formatter
 import notifier
 import d1_client
 import config
+import ops_guards
 import persistence
 import rubric as rubric_module
 import schemas
@@ -76,6 +77,9 @@ def _kb_source():
 def _sync_kb_if_enabled() -> None:
     """Synchronise Notion → Obsidian en début de run quand Obsidian est la source KB."""
     if not config.OBSIDIAN_KB_ENABLED:
+        return
+    if getattr(config, "SKIP_KB_SYNC", False):
+        log.info("[kb-sync] skip demandé par SKIP_KB_SYNC=true — KB Obsidian existante utilisée")
         return
     try:
         summary = notion_kb_sync.sync(force=False)
@@ -779,19 +783,20 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
             for c in calls_to_analyze
         ]
         existing = persistence.fetch_raw_evaluations_by_call_ids([c for c in call_ids if c])
+        remaining: list[dict] = list(calls_to_analyze)
         if existing:
-            remaining: list[dict] = []
+            remaining = []
             for call in calls_to_analyze:
                 cid = persistence.canonical_call_id(call)
                 if cid and cid in existing:
                     reused_evaluations.append(existing[cid])
                 else:
                     remaining.append(call)
-            log.info(
-                f"  [weekly] Réutilisation {len(reused_evaluations)} évaluation(s) déjà persistée(s) — "
-                f"{len(remaining)} appel(s) restant(s) à analyser"
-            )
-            calls_to_analyze = remaining
+        log.info(
+            f"  [reuse] Réutilisation {len(reused_evaluations)} évaluation(s) déjà persistée(s) — "
+            f"{len(remaining)} appel(s) restant(s) à analyser"
+        )
+        calls_to_analyze = remaining
 
     # ── Étape 1 : Pre-screening ───────────────────────────────────────────────
     log.info(f"  [routing] Pre-screening {len(calls_to_analyze)} appels...")
@@ -822,6 +827,21 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         "retries_used": 0,
         "failure_reasons": {},
     }
+
+    # ── Garde anti-marathon (daily) ───────────────────────────────────────────
+    # Deadline wall-clock pour la phase d'analyse LLM. Au-delà, on cesse de
+    # lancer de nouveaux batches : le rapport se publie en mode dégradé avec ce
+    # qui est déjà calculé, plutôt que de tenir le lock pendant des heures et de
+    # bloquer les runs suivants (cause des 2 jours sans reporting).
+    _analysis_deadline = None
+    if mode == "daily" and config.DAILY_MAX_WALL_SECONDS:
+        _analysis_deadline = time.monotonic() + config.DAILY_MAX_WALL_SECONDS
+
+    def _wall_budget_exceeded() -> bool:
+        if _analysis_deadline is None or time.monotonic() <= _analysis_deadline:
+            return False
+        batch_stats["wall_budget_exceeded"] = True
+        return True
 
     # ── Étapes 2-4 : Analyse Ollama parallélisée par tier de risque ───────────
     # Les 3 tiers tournent chacun via un ThreadPoolExecutor borné par
@@ -861,12 +881,20 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         workers = max(1, min(config.OLLAMA_ANALYSIS_MAX_WORKERS, len(batches)))
         if workers == 1:
             for idx, batch in enumerate(batches):
+                if _wall_budget_exceeded():
+                    log.warning(f"    ⏱️ Budget temps atteint — arrêt analyse {tier_label} au batch {idx+1}/{batch_n} (rapport dégradé)")
+                    break
                 evals = _process_batch(idx, batch)
                 all_evaluations.extend(evals)
                 log.info(f"    → {len(evals)} évaluations retenues ({tier_label}, batch {idx+1}/{batch_n})")
             return
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_process_batch, idx, batch): idx for idx, batch in enumerate(batches)}
+            futures = {}
+            for idx, batch in enumerate(batches):
+                if _wall_budget_exceeded():
+                    log.warning(f"    ⏱️ Budget temps atteint — arrêt soumission {tier_label} au batch {idx+1}/{batch_n} (rapport dégradé)")
+                    break
+                futures[pool.submit(_process_batch, idx, batch)] = idx
             for fut in as_completed(futures):
                 idx = futures[fut]
                 try:
@@ -1284,10 +1312,46 @@ def _run_shadow_evaluations(target_date: datetime, calls_to_analyze: list[dict],
     return rows
 
 
+def _enrich_with_reused_transcripts(calls: list[dict]) -> list[dict]:
+    if not config.DAILY_REUSE_EXISTING_TRANSCRIPTS:
+        return call_fetcher.enrich_with_transcripts(calls, max_with_transcript=len(calls))
+
+    call_ids = [
+        persistence.canonical_call_id(call)
+        for call in calls or []
+    ]
+    existing = persistence.fetch_transcripts_by_call_ids([cid for cid in call_ids if cid])
+    missing: list[dict] = []
+    reused = 0
+    max_chars = max(500, config.OLLAMA_TRANSCRIPT_MAX_CHARS)
+
+    for call in calls or []:
+        cid = persistence.canonical_call_id(call)
+        text = existing.get(cid or "")
+        if text:
+            call["transcript"] = text[:max_chars]
+            reused += 1
+        else:
+            missing.append(call)
+
+    log.info(
+        f"  [reuse] Transcripts existants : {reused}/{len(calls or [])} — "
+        f"{len(missing)} à récupérer"
+    )
+    if missing:
+        call_fetcher.enrich_with_transcripts(missing, max_with_transcript=len(missing))
+    return calls
+
+
 # ── Modes d'exécution ─────────────────────────────────────────────────────────
 
 def run_daily(target_date: datetime):
     log.info(f"=== ANALYSE QUOTIDIENNE — {target_date.strftime('%d/%m/%Y')} ===")
+    # Garde-fou : valider la config de publication AVANT tout calcul. Une clé
+    # requise absente (ex. .env écrasé par une modif CSAT/cockpit) doit faire
+    # échouer le run en quelques secondes avec une alerte Slack, pas après des
+    # heures de calcul qui ne publieraient rien.
+    ops_guards.run_preflight_or_abort("daily", logger=log)
     _sync_kb_if_enabled()
     run_record = _build_run_record("daily", target_date)
     persistence.save_llm_run(run_record)
@@ -1352,9 +1416,7 @@ def run_daily(target_date: datetime):
         eligible_driveco_count = len([c for c in driveco_calls if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
 
         # Enrichissement transcripts pour les appels prioritaires
-        calls_to_analyze = call_fetcher.enrich_with_transcripts(
-            calls_to_analyze, max_with_transcript=len(calls_to_analyze)
-        )
+        calls_to_analyze = _enrich_with_reused_transcripts(calls_to_analyze)
         persistence.persist_transcripts(calls_to_analyze)
 
         kb_summary = _kb_source().get_kb_summary_for_prompt()
@@ -1364,6 +1426,7 @@ def run_daily(target_date: datetime):
             target_date, metrics, calls_to_analyze, kb_summary,
             consolidation_model=llm_client.get_model_standard(),  # Haiku
             mode="daily",
+            reuse_existing_evaluations=config.DAILY_REUSE_EXISTING_EVALUATIONS,
         )
 
         transcripts_count = sum(1 for c in calls_to_analyze if c.get("transcript"))
@@ -1387,6 +1450,18 @@ def run_daily(target_date: datetime):
             retained_calls=len(analysis.get("call_evaluations", [])),
             batch_stats=analysis.get("batch_stats"),
         )
+
+        # Garde anti-marathon : si le budget temps a coupé l'analyse, on le
+        # signale explicitement (le rapport est publié quand même, en partiel).
+        if analysis.get("batch_stats", {}).get("wall_budget_exceeded"):
+            mins = int((config.DAILY_MAX_WALL_SECONDS or 0) / 60)
+            notifier.send_alert(
+                f"⏱️ Run QA quotidien {target_date.strftime('%d/%m/%Y')} : budget temps "
+                f"({mins} min) atteint. Rapport publié en couverture partielle "
+                f"({len(analysis.get('call_evaluations', []))}/{len(calls_to_analyze)} appels analysés) "
+                "pour ne pas bloquer les runs suivants.",
+                level="warning",
+            )
 
         save_analysis_to_d1(analysis.get("call_evaluations", []))
         persistence.persist_evaluations(
@@ -1418,13 +1493,11 @@ def run_daily(target_date: datetime):
                 analysis["run_health"]["selected_calls"],
             )
         else:
-            # Règle : un seul post Slack par run daily. Les raisons d'appel et
-            # anomalies sont intégrées directement dans le Block Kit principal
-            # (voir notifier.build_slack_blocks) pour éviter les doublons et les
-            # divergences de counts.
-            notifier.send_slack_notification(analysis, mode="daily", date=target_date,
-                                             calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
             log.info("  ✅ Analyse quotidienne terminée.")
+        # Règle : un seul post Slack par run daily. Même en mode dégradé, on
+        # publie le rapport principal pour éviter un silence opérationnel.
+        notifier.send_slack_notification(analysis, mode="daily", date=target_date,
+                                         calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
     except Exception:
         _finalize_run_record(run_record, "failed", len(calls_to_analyze), analysis, errors_count=1)
         raise

@@ -132,6 +132,9 @@ OLLAMA_NUM_CTX          = _optional_int_env(
 # Réduit le nombre d'appels Ollama (1 au lieu de 3) → runs plus rapides. Le
 # fallback legacy (3 passes) reste actif si la sortie one-shot est invalide.
 OLLAMA_ANALYSIS_ONE_SHOT = os.getenv("OLLAMA_ANALYSIS_ONE_SHOT", "true").strip().lower() in {"1", "true", "yes", "on"}
+OLLAMA_LEGACY_FALLBACK_ON_ONE_SHOT_FAILURE = os.getenv(
+    "OLLAMA_LEGACY_FALLBACK_ON_ONE_SHOT_FAILURE", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
 OLLAMA_ONE_SHOT_MAX_TOKENS = int(os.getenv("OLLAMA_ONE_SHOT_MAX_TOKENS", "5200"))
 # Timeout court : un appel pendu échoue vite (→ fallback) au lieu de bloquer 1h.
 OLLAMA_ONE_SHOT_TIMEOUT = int(os.getenv("OLLAMA_ONE_SHOT_TIMEOUT", "300"))
@@ -157,6 +160,7 @@ NOTION_REPORTS_PAGE_ID = os.getenv("NOTION_REPORTS_PAGE_ID", "")
 SLACK_BOT_TOKEN     = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL_ID    = os.getenv("SLACK_CHANNEL_ID", "")
 SLACK_VOC_ALERTS_CHANNEL_ID = os.getenv("SLACK_VOC_ALERTS_CHANNEL_ID", SLACK_CHANNEL_ID)
+SLACK_ALERT_CHANNEL_ID      = os.getenv("SLACK_ALERT_CHANNEL_ID", SLACK_CHANNEL_ID)
 
 # ── CSAT Call Insight ─────────────────────────────────────────────────────────
 SLACK_CSAT_CHANNEL_ID = os.getenv("SLACK_CSAT_CHANNEL_ID", "C0B724V5X4L")
@@ -183,6 +187,12 @@ CLAUDE_SHADOW_SAMPLE_PCT = float(os.getenv("CLAUDE_SHADOW_SAMPLE_PCT", "0.10"))
 RELIABILITY_MAE_ALERT_THRESHOLD = float(os.getenv("RELIABILITY_MAE_ALERT_THRESHOLD", "1.0"))
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8788"))
 RUN_DEGRADED_THRESHOLD = float(os.getenv("RUN_DEGRADED_THRESHOLD", "0.5"))
+DAILY_REUSE_EXISTING_EVALUATIONS = os.getenv(
+    "DAILY_REUSE_EXISTING_EVALUATIONS", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+DAILY_REUSE_EXISTING_TRANSCRIPTS = os.getenv(
+    "DAILY_REUSE_EXISTING_TRANSCRIPTS", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Lignes Aircall ───────────────────────────────────────────────────────────
 # Lignes analysées pour le QA UCC (assistance + transferts chauds vers Care)
@@ -223,6 +233,11 @@ TOP_PROBLEMATIC_CALLS   = 5      # Top appels problématiques isolés dans le ra
 # Cap optionnel (None par défaut = 75% couverture préservée).
 # À n'activer que pour un incident ponctuel via env DAILY_MAX_CALLS_ANALYZED=<n>.
 DAILY_MAX_CALLS_ANALYZED = _optional_int_env("DAILY_MAX_CALLS_ANALYZED", None)
+# Garde anti-marathon : budget temps (secondes) sur la phase d'analyse LLM du
+# run *daily*. Au-delà, on arrête d'analyser de nouveaux batches et on publie un
+# rapport dégradé avec ce qui est déjà calculé, au lieu de tenir le lock 16h et
+# de bloquer les runs suivants. None / 0 = désactivé. 5400 = 90 min.
+DAILY_MAX_WALL_SECONDS = _optional_int_env("DAILY_MAX_WALL_SECONDS", 5400)
 # Nombre de batches Ollama traités en parallèle (ThreadPoolExecutor).
 # 1 = comportement séquentiel historique. Gemma4 tolère 2-3 sur Mac mini.
 OLLAMA_ANALYSIS_MAX_WORKERS = max(1, int(os.getenv("OLLAMA_ANALYSIS_MAX_WORKERS", "2")))
@@ -274,6 +289,7 @@ DISABLE_OBSIDIAN_PUBLISH = os.getenv("DISABLE_OBSIDIAN_PUBLISH", "false").strip(
 OBSIDIAN_KB_SUBDIR      = os.getenv("OBSIDIAN_KB_SUBDIR", "Driveco QA/KB").strip() or "Driveco QA/KB"
 # Si true : la pipeline lit la KB depuis Obsidian au lieu de Notion.
 OBSIDIAN_KB_ENABLED     = os.getenv("OBSIDIAN_KB_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SKIP_KB_SYNC            = os.getenv("SKIP_KB_SYNC", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # Crée les répertoires si absents
 REPORT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

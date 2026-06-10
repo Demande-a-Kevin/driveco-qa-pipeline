@@ -74,6 +74,27 @@ Ne jamais éditer le runtime directement sauf debug explicite.
 > launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kev1n.driveco.qa.weekly.plist
 > ```
 
+## Garde-fous opérationnels (lot sécurisation 2026-06-07)
+
+Ajoutés après un incident où une modif CSAT/cockpit a écrasé le `.env` (perte
+de `SUPABASE_*` / `NOTION_REPORTS_PAGE_ID`) et où un run Ollama a tenu le lock
+16h, bloquant 2 jours de reporting **en silence**. But : qu'une modif faite
+ailleurs ne puisse plus casser le daily sans qu'on le voie.
+
+| Garde-fou | Fichier | Effet |
+|-----------|---------|-------|
+| **Preflight publish-config** | `ops_guards.py` + `.env.qa.required` | `run_daily` vérifie les clés requises AVANT tout calcul ; clé manquante = abort en secondes + alerte Slack. |
+| **Manifeste des clés requises** | `.env.qa.required` | Liste versionnée des clés dont dépend le daily. Si tu ajoutes une dépendance de publication, ajoute-la ici. |
+| **Garde anti-marathon** | `config.DAILY_MAX_WALL_SECONDS` (défaut 5400s/90min) | Budget temps sur l'analyse LLM du daily : au-delà, rapport dégradé publié + lock libéré, au lieu de tenir le lock des heures. |
+| **Watchdog qui alerte vraiment** | `run_daily_watchdog.sh` | Alertes Slack via le **venv** (plus via `python3` système qui n'a pas `requests`/`dotenv` → muet). Escalade : lock tenu + run bloqué = kill + relance + alerte critique. |
+| **Détecteur de dérive** | `check_runtime_drift.sh` | Compare source ↔ runtime et alerte si divergence. Lancé par le watchdog. |
+| **Gate test+deploy** | `deploy.sh` | Lance `pytest` et ne synchronise le runtime QUE si vert. |
+
+**Règle d'or** : ne JAMAIS éditer le `.env` partagé pour CSAT/cockpit sans
+vérifier que les clés de `.env.qa.required` restent présentes. Idéalement, les
+jobs CSAT/cockpit utilisent leurs propres variables et ne touchent pas aux clés
+QA.
+
 ## Modèle LLM et comportement
 
 - **Modèle local principal** : `gemma4:latest` via Ollama
@@ -84,11 +105,21 @@ Ne jamais éditer le runtime directement sauf debug explicite.
 
 Depuis lot 13, le pipeline utilise le vault **Obsidian local** comme source KB principale :
 
-- `OBSIDIAN_VAULT_DIR=/Users/kev1n/Documents/Obsidian/Kev1n`
-- `OBSIDIAN_KB_SUBDIR=Driveco QA/KB`
+- `OBSIDIAN_VAULT_DIR=/Users/kev1n/Documents/Obsidian`
+- `OBSIDIAN_KB_SUBDIR=10 - Pro/Driveco QA/KB`
+- `OBSIDIAN_REPORTS_SUBDIR=10 - Pro/Driveco QA`
 - `OBSIDIAN_KB_ENABLED=true`
 
 Le miroir Notion vers Obsidian est maintenu par le pipeline lui-même. Si `OBSIDIAN_KB_ENABLED=false`, le pipeline se rabat sur la source Notion.
+
+> **Vigilance répertoires** : `REPORT_OUTPUT_DIR` (rapports, flags, cache, logs)
+> est lu par le `.env` actif. Il a été repointé vers
+> `/Users/kev1n/Documents/Claude/workspace/driveco/qa/qa-driveco-data` lors de
+> modifs CSAT/cockpit, alors que d'anciens rapports vivent encore dans
+> `runtime/qa-driveco-data`. Le watchdog ET le notifier lisent tous deux
+> `REPORT_OUTPUT_DIR` (cohérents entre eux), mais garde en tête que l'état est
+> éparpillé sur 2 racines : pour retrouver un rapport, vérifie d'abord
+> `config.REPORT_OUTPUT_DIR`.
 
 ## Architecture Slack (depuis lot 14)
 
@@ -160,13 +191,21 @@ GDRIVE_FOLDER_ID
 - Le principe `actionable_items` : déduplication avant rendu Slack / Markdown
 - `daily_kpi_snapshot.agent_id = ''` pour les snapshots globaux (`scope = 'global'`)
 - `RUN_DEGRADED_THRESHOLD` configurable — marquer les runs vides/sous-rétention comme `degraded`
+- Le **preflight** `ops_guards.run_preflight_or_abort` en tête de `run_daily` — ne pas le contourner
+- Le **manifeste** `.env.qa.required` — le tenir à jour quand une dépendance de publication change
+- La **garde anti-marathon** `DAILY_MAX_WALL_SECONDS` — ne pas la mettre à 0 en prod
+- Le **watchdog** doit alerter via `$PYTHON_BIN` (venv), jamais `python3` nu
 - `caller_hash` pour la cohérence analytique — ne pas exposer les numéros bruts
 - `resolution_status` et VoC `product_area` additifs — ne pas les mélanger dans la rubric QA
 
 ### Workflow obligatoire après chaque modif
 1. Modifier le **repo source**
-2. `pytest -x --tb=short` (41 tests, tous verts)
-3. `bash sync_launchd_runtime.sh && bash setup_launchd.sh`
+2. **`bash deploy.sh`** — lance `pytest` (146 tests) et ne synchronise le runtime
+   QUE si tout est vert. Remplace l'appel manuel à `sync_launchd_runtime.sh` +
+   `setup_launchd.sh` (qui restent utilisables pour un sync forcé sans tests).
+
+> Ne jamais pousser vers le runtime sans tests verts : c'est ce qui a laissé du
+> code non testé atteindre la prod. `deploy.sh` est le garde-fou.
 
 ### Ne jamais committer
 - `.env`, tokens OAuth, exports QA locaux, fichiers credentials Google Drive

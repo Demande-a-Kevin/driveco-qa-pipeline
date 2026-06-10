@@ -20,16 +20,26 @@ log_line() {
   printf '%s [daily-watchdog] %s\n' "$(timestamp)" "$*" >> "$LOG_FILE"
 }
 
+# IMPORTANT : utiliser le python du venv ($PYTHON_BIN), pas `python3` nu.
+# Sous launchd, `python3` résout vers /usr/bin/python3 (système) qui n'a PAS
+# requests/dotenv -> l'import échoue et l'alerte Slack meurt en silence. C'est
+# précisément ce qui a rendu le watchdog muet pendant 2 jours. On loggue tout
+# échec de livraison pour ne plus jamais être aveugle.
 send_alert() {
   local level="$1"
   local message="$2"
-  PIPELINE_DIR="$PIPELINE_DIR" PIPELINE_ALERT_LEVEL="$level" PIPELINE_ALERT_MESSAGE="$message" python3 - <<'PY' >/dev/null 2>&1 || true
+  if PIPELINE_DIR="$PIPELINE_DIR" PIPELINE_ALERT_LEVEL="$level" PIPELINE_ALERT_MESSAGE="$message" "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import sys
 import os
 sys.path.insert(0, os.environ["PIPELINE_DIR"])
 import notifier
 notifier.send_alert(os.environ["PIPELINE_ALERT_MESSAGE"], level=os.environ["PIPELINE_ALERT_LEVEL"])
 PY
+  then
+    :
+  else
+    log_line "alert_delivery_failed level=$level python=$PYTHON_BIN"
+  fi
 }
 
 target_date="$(
@@ -57,6 +67,12 @@ if [ -z "$OUTPUT_DIR" ]; then
   OUTPUT_DIR="$PIPELINE_DIR/qa-driveco-data"
 fi
 
+# Garde-fou dérive source<->runtime (non bloquant) : alerte si le runtime
+# launchd ne reflète plus le repo source.
+if [ -x "$PIPELINE_DIR/check_runtime_drift.sh" ]; then
+  bash "$PIPELINE_DIR/check_runtime_drift.sh" >> "$LOG_FILE" 2>&1 || true
+fi
+
 report_file="$OUTPUT_DIR/${target_date}_daily_report.md"
 flag_file="$OUTPUT_DIR/.slack_sent_daily_${target_date}.flag"
 watchdog_alert_flag="$OUTPUT_DIR/.watchdog_alert_daily_${target_date}.flag"
@@ -76,12 +92,34 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 if [ -n "$lock_pid" ] && ps -p "$lock_pid" >/dev/null 2>&1; then
-  log_line "skip target_date=$target_date daily_lock_held pid=$lock_pid"
-  if [ ! -f "$watchdog_alert_flag" ]; then
-    send_alert "warning" "Rapport QA quotidien ${target_date} pas encore publié à l'heure prévue, mais un run est bien en cours."
-    touch "$watchdog_alert_flag"
+  log_mtime="$(stat -f '%m' "$LOG_FILE" 2>/dev/null || echo 0)"
+  now_ts="$(date '+%s')"
+  log_age=$(( now_ts - log_mtime ))
+  run_age=0
+  if [ -n "${started_at_unix:-}" ]; then
+    run_age=$(( now_ts - started_at_unix ))
   fi
-  exit 0
+  # Lock tenu MAIS run réellement bloqué (trop long OU aucun progrès de log) :
+  # on casse le marathon — c'est exactement ce qui a tenu le lock 16h et bloqué
+  # les runs suivants. Sinon (run sain en cours), on avertit une fois et on sort.
+  if [ "$run_age" -gt "$MAX_RUNNING_SECONDS" ] || [ "$log_age" -gt "$STALE_LOG_SECONDS" ]; then
+    log_line "daily_lock_held_but_stuck target_date=$target_date lock_pid=$lock_pid run_age=$run_age log_age=$log_age breaking_lock_and_relaunching"
+    kill "$lock_pid" >/dev/null 2>&1 || true
+    [ -n "$running_pid" ] && kill "$running_pid" >/dev/null 2>&1 || true
+    sleep 2
+    ps -p "$lock_pid" >/dev/null 2>&1 && kill -9 "$lock_pid" >/dev/null 2>&1 || true
+    { [ -n "$running_pid" ] && ps -p "$running_pid" >/dev/null 2>&1 && kill -9 "$running_pid" >/dev/null 2>&1; } || true
+    rm -rf "$LOCK_DIR"
+    send_alert "critical" "Run QA quotidien ${target_date} BLOQUÉ ($(( run_age / 60 )) min, sans progrès depuis $(( log_age / 60 )) min). Process tué, lock libéré, relance automatique."
+    # on tombe vers la relance en fin de script
+  else
+    log_line "skip target_date=$target_date daily_lock_held pid=$lock_pid run_age=$run_age log_age=$log_age run_in_progress"
+    if [ ! -f "$watchdog_alert_flag" ]; then
+      send_alert "warning" "Rapport QA quotidien ${target_date} pas encore publié, mais un run est en cours depuis $(( run_age / 60 )) min."
+      touch "$watchdog_alert_flag"
+    fi
+    exit 0
+  fi
 fi
 
 if [ -n "$running_pid" ] && ps -p "$running_pid" >/dev/null 2>&1; then
