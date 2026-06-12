@@ -1370,6 +1370,18 @@ def run_daily(target_date: datetime):
             raise RuntimeError(
                 "empty_call_source: 0 appel brut récupéré; publication bloquée pour éviter un reporting vide"
             )
+        if (
+            calls
+            and config.MIN_DAILY_RAW_CALLS
+            and len(calls) < config.MIN_DAILY_RAW_CALLS
+            and not config.ALLOW_LOW_VOLUME_DAILY_REPORT
+        ):
+            raise RuntimeError(
+                f"low_call_volume: seulement {len(calls)} appel(s) brut(s) récupéré(s) "
+                f"(< seuil {config.MIN_DAILY_RAW_CALLS}); publication bloquée — source D1 "
+                f"probablement pas encore alimentée pour la veille. Le watchdog relancera "
+                f"une fois l'ingestion terminée (ALLOW_LOW_VOLUME_DAILY_REPORT=true pour forcer)."
+            )
         persistence.persist_calls(calls)
 
         # Métriques globales sur TOUS les appels (avant filtre UCC)

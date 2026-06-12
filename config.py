@@ -277,6 +277,15 @@ LLM_CACHE_DIR       = _resolve_path_env(
 DISABLE_SLACK_NOTIFICATIONS = os.getenv("DISABLE_SLACK_NOTIFICATIONS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DISABLE_EXTERNAL_PUBLISH = os.getenv("DISABLE_EXTERNAL_PUBLISH", "false").strip().lower() in {"1", "true", "yes", "on"}
 ALLOW_EMPTY_DAILY_REPORT = os.getenv("ALLOW_EMPTY_DAILY_REPORT", "false").strip().lower() in {"1", "true", "yes", "on"}
+# Garde anti-volume-anormalement-bas : la source D1 (worker Cloudflare) n'est pas
+# toujours alimentée pour la veille à l'heure du cron daily (01:00). Quand elle ne
+# l'est pas encore, fetch_calls_for_date renvoie une poignée d'appels et le
+# pipeline publiait un rapport trompeur ("1 appel, 9.4/10", alertes stats dégénérées).
+# On bloque donc la publication quand le volume brut est sous ce plancher : le run
+# échoue proprement (aucun rapport/flag écrit) et le watchdog de 06:45 relance une
+# fois D1 complet. Override pour une journée réellement très creuse : ALLOW_LOW_VOLUME_DAILY_REPORT=true.
+MIN_DAILY_RAW_CALLS = _optional_int_env("MIN_DAILY_RAW_CALLS", 15)
+ALLOW_LOW_VOLUME_DAILY_REPORT = os.getenv("ALLOW_LOW_VOLUME_DAILY_REPORT", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Obsidian publication ────────────────────────────────────────────────────
 # Dépose les rapports Markdown (daily/weekly) dans un vault Obsidian local

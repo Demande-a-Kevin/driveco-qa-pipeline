@@ -91,6 +91,29 @@ class AnalysisPipelineTest(unittest.TestCase):
         send_slack.assert_not_called()
         finalize.assert_called_once()
 
+    def test_run_daily_blocks_low_volume_source_before_publication(self):
+        # 1 seul appel brut = signature "D1 pas encore alimentée pour la veille".
+        # Doit bloquer la publication (raise) sans rapport ni Slack, pour laisser
+        # le watchdog relancer une fois l'ingestion terminée.
+        one_call = [{"id": "1", "started_at": 0, "direction": "inbound"}]
+        with mock.patch.object(analysis_pipeline, "_sync_kb_if_enabled"), \
+             mock.patch.object(analysis_pipeline.persistence, "save_llm_run"), \
+             mock.patch.object(analysis_pipeline.call_fetcher, "fetch_calls_for_date", return_value=one_call), \
+             mock.patch.object(analysis_pipeline.call_classifier, "classify_all", return_value=one_call), \
+             mock.patch.object(analysis_pipeline.call_fetcher, "enrich_with_agent_identity", return_value=one_call), \
+             mock.patch.object(analysis_pipeline.config, "ALLOW_EMPTY_DAILY_REPORT", False), \
+             mock.patch.object(analysis_pipeline.config, "ALLOW_LOW_VOLUME_DAILY_REPORT", False), \
+             mock.patch.object(analysis_pipeline.config, "MIN_DAILY_RAW_CALLS", 15), \
+             mock.patch.object(analysis_pipeline.notifier, "save_report") as save_report, \
+             mock.patch.object(analysis_pipeline.notifier, "send_slack_notification") as send_slack, \
+             mock.patch.object(analysis_pipeline, "_finalize_run_record") as finalize:
+            with self.assertRaisesRegex(RuntimeError, "low_call_volume"):
+                analysis_pipeline.run_daily(datetime(2026, 5, 11))
+
+        save_report.assert_not_called()
+        send_slack.assert_not_called()
+        finalize.assert_called_once()
+
 
 class WeeklyReuseExistingEvaluationsTest(unittest.TestCase):
     """Le weekly doit réutiliser les évaluations déjà persistées par les
