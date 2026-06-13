@@ -201,6 +201,20 @@ if [ "$MODE" = "daily" ]; then
   stop_benchmark_processes
 fi
 
+# Chantier 0.1 : le daily est mono-locataire d'Ollama. Le benchmark (01:30) tombe
+# en plein dans le daily (01:00) → il céderait la place pour ne pas se disputer la
+# RAM. Le daily préempte un benchmark déjà lancé ; ici on couvre le cas inverse
+# (benchmark démarrant pendant un daily en cours).
+if [ "$MODE" = "benchmark" ]; then
+  daily_lock="$LOCK_DIR/daily.lock"
+  daily_pid="$(cat "$daily_lock/pid" 2>/dev/null || true)"
+  if [ -n "$daily_pid" ] && ps -p "$daily_pid" >/dev/null 2>&1; then
+    log_line "skip mode=benchmark reason=$RUN_REASON daily_running pid=$daily_pid yield_to_daily"
+    write_status "skipped" "daily_running pid=$daily_pid"
+    exit 0
+  fi
+fi
+
 if [ -n "$CAFFEINATE_BIN" ]; then
   log_line "start mode=$MODE reason=$RUN_REASON python=$PYTHON_BIN caffeinate=1"
 else
