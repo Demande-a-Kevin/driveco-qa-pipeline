@@ -98,6 +98,10 @@ def run_once(now_epoch: int | None = None, state_path: Path | None = None) -> No
     if config.DISABLE_SENTIMENT_INSIGHT:
         log.info("Sentiment Insight désactivé (DISABLE_SENTIMENT_INSIGHT)")
         return
+    if config.insight_paused_now():
+        log.info("Sentiment Insight en pause nocturne (INSIGHT_PAUSE_WINDOW=%s) — exit 0, "
+                 "rattrapage à la reprise", config.INSIGHT_PAUSE_WINDOW)
+        return
     now_epoch = int(now_epoch if now_epoch is not None else time.time())
     state_path = Path(state_path or DEFAULT_STATE_PATH)
     channel = config.SLACK_SENTIMENT_CHANNEL_ID

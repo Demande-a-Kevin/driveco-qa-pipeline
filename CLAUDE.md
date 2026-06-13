@@ -64,7 +64,7 @@ Ne jamais éditer le runtime directement sauf debug explicite.
 | Job | Déclenchement |
 |-----|---------------|
 | benchmark | Tous les jours à 01:30 |
-| daily | Tous les jours à **02:30** |
+| daily | Tous les jours à **01:00** |
 | watchdog daily | Tous les jours à 06:45 |
 | reliability | Lundi à 04:00 |
 | weekly | Lundi à **07:15** |
@@ -97,9 +97,24 @@ QA.
 
 ## Modèle LLM et comportement
 
-- **Modèle local principal** : `gemma4:latest` via Ollama
+- **Modèle local principal** : `gemma4:12b` via Ollama (migration depuis `gemma4:latest` le 05/06).
 - **Anthropic** : intégré dans le code mais non opérationnel actuellement (problème billing). **Ne pas supprimer le fallback local.**
 - Le pipeline doit toujours produire une sortie exploitable, même si Ollama échoue partiellement.
+
+### ⚠️ Ollama = ressource PARTAGÉE du Mac mini (16 Go)
+
+Le même Ollama sert la QA (daily), les jobs CSAT/Sentiment Insight (launchd 3 min)
+et le tools-api du cockpit. **Deux modèles, ou un modèle + des requêtes concurrentes,
+ne tiennent pas en 16 Go** → offload partiel CPU → débit ÷20 (mesuré 13/06 :
+~66 s/appel seul vs ~25 min/appel en contention). Règles :
+
+- La nuit (`INSIGHT_PAUSE_WINDOW`, défaut 23:00-08:00), les jobs Insight s'auto-suspendent
+  pour laisser le 12B **seul** pendant le daily. Reprise inconditionnelle à 08:00 (rattrapage
+  par curseur d'état).
+- `OLLAMA_KEEP_ALIVE` (défaut 30m) garde le modèle résident entre batches.
+- Tout usage Ollama ajouté ailleurs (cockpit, autre repo) DOIT utiliser le **même** modèle,
+  sinon churn mémoire (load/unload permanent).
+- `OLLAMA_NUM_CTX` : 16384 par défaut (mesuré : n'impacte pas le débit seul ; marge mémoire).
 
 ## Source KB (base de connaissances)
 

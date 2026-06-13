@@ -123,6 +123,8 @@ def _chat(model: str, messages: list[dict], max_tokens: int = 2048, timeout: int
         "stream": False,
         "options": options,
     }
+    if config.OLLAMA_KEEP_ALIVE:
+        payload["keep_alive"] = config.OLLAMA_KEEP_ALIVE
     if json_mode:
         payload["format"] = "json"
     resp = _SESSION.post(url, json=payload, timeout=timeout or config.OLLAMA_TIMEOUT)
@@ -149,6 +151,8 @@ def _generate(model: str, prompt: str, max_tokens: int = 2048, timeout: int | No
         "stream": False,
         "options": options,
     }
+    if config.OLLAMA_KEEP_ALIVE:
+        payload["keep_alive"] = config.OLLAMA_KEEP_ALIVE
     if json_mode:
         payload["format"] = "json"
     resp = _SESSION.post(url, json=payload, timeout=timeout or config.OLLAMA_TIMEOUT)

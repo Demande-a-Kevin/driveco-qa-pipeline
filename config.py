@@ -124,10 +124,19 @@ OLLAMA_TRANSCRIPT_MAX_CHARS = int(
         "3600" if OLLAMA_FIXED_MODEL.startswith("gemma4") else "2200",
     )
 )
+# num_ctx : 16384 par défaut sur gemma4. Mesure 13/06 (mono-locataire) : 8192,
+# 16384 et 32768 chargent tous à 100% GPU et tournent ~66 s/appel — le num_ctx
+# n'était PAS le goulot (la contention l'était, cf. chantier 0.1). 16384 garde une
+# marge mémoire confortable pour la cohabitation diurne (catchup + insights) tout
+# en couvrant la quasi-totalité des transcripts une fois tronqués (TRANSCRIPT_MAX_CHARS).
 OLLAMA_NUM_CTX          = _optional_int_env(
     "OLLAMA_NUM_CTX",
-    32768 if OLLAMA_FIXED_MODEL.startswith("gemma4") else None,
+    16384 if OLLAMA_FIXED_MODEL.startswith("gemma4") else None,
 )
+# keep_alive : garde le modèle résident entre les batches du daily pour éviter un
+# rechargement (≈ plusieurs s) à chaque batch. Ressource partagée du Mac mini :
+# la nuit, le 12B doit rester chaud et seul (cf. pause des insights 23h-08h).
+OLLAMA_KEEP_ALIVE       = os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip()
 # ── Analyse one-shot (1 appel = factual + scorecard + VoC) ────────────────────
 # Réduit le nombre d'appels Ollama (1 au lieu de 3) → runs plus rapides. Le
 # fallback legacy (3 passes) reste actif si la sortie one-shot est invalide.
@@ -143,6 +152,49 @@ OLLAMA_TEMPERATURE      = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 OLLAMA_TOP_P            = float(os.getenv("OLLAMA_TOP_P", "0.95"))
 OLLAMA_TOP_K            = int(os.getenv("OLLAMA_TOP_K", "64"))
 OLLAMA_ENABLE_THINKING  = os.getenv("OLLAMA_ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+# ── Pause nocturne des jobs Insight (chantier 0.1) ───────────────────────────
+# Les jobs CSAT/Sentiment Insight (launchd toutes les 3 min) partagent le même
+# Ollama que le daily QA. Pendant le run de nuit, le 12B doit être SEUL en RAM
+# (sinon offload partiel CPU → ~25 min/appel au lieu de ~1 min, mesuré le 13/06).
+# Fenêtre HH:MM-HH:MM (peut enjamber minuit). Dans la fenêtre, les jobs insight
+# loguent une ligne et exit 0 (pas d'erreur). Le curseur d'état n'avance pas →
+# rattrapage automatique des posts de la nuit à la reprise (08:00). Vide = désactivé.
+INSIGHT_PAUSE_WINDOW    = os.getenv("INSIGHT_PAUSE_WINDOW", "23:00-08:00").strip()
+
+
+def _parse_hhmm(s: str) -> int | None:
+    """'HH:MM' → minutes depuis minuit, ou None si invalide."""
+    try:
+        h, m = s.strip().split(":")
+        h, m = int(h), int(m)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return h * 60 + m
+    except (ValueError, AttributeError):
+        pass
+    return None
+
+
+def insight_paused_now(now=None) -> bool:
+    """True si l'instant courant est dans INSIGHT_PAUSE_WINDOW (gère l'enjambement
+    de minuit). Fenêtre vide/invalide → jamais en pause."""
+    window = INSIGHT_PAUSE_WINDOW
+    if not window or "-" not in window:
+        return False
+    start_s, end_s = window.split("-", 1)
+    start = _parse_hhmm(start_s)
+    end = _parse_hhmm(end_s)
+    if start is None or end is None:
+        return False
+    import datetime as _dt
+    now = now or _dt.datetime.now()
+    cur = now.hour * 60 + now.minute
+    if start == end:
+        return False
+    if start < end:
+        return start <= cur < end
+    # fenêtre qui enjambe minuit (ex. 23:00-08:00)
+    return cur >= start or cur < end
 ENABLE_ANTHROPIC_CONSOLIDATION = os.getenv("ENABLE_ANTHROPIC_CONSOLIDATION", "false").strip().lower() in {"1", "true", "yes", "on"}
 # Seuil de risque au-delà duquel Ollama fait l'analyse complète (0-10)
 OLLAMA_RISK_THRESHOLD   = float(os.getenv("OLLAMA_RISK_THRESHOLD", "4.0"))
