@@ -175,19 +175,37 @@ def select_calls_for_analysis(calls: list[dict], coverage_pct: float = None, max
 
     target_n = min(len(eligible), max(1, math.ceil(len(eligible) * coverage_pct)))
 
+    # Chantier B.1 : ordre de PRIORITÉ (et non échantillonnage — couverture 100 %).
+    # Si le budget coupe, ce sont les appels banals (fin de liste) qui partent au
+    # rattrapage 0.6, jamais les escalades. Strates : escalades → repeat callers →
+    # longs → courts → abandons → reste chronologique.
     escalations = [c for c in eligible if "escalation" in (c.get("tags") or "").lower()]
-    abandoned   = [c for c in eligible if c.get("answered") == "No"]
-    short       = [c for c in eligible
-                   if c.get("answered") == "Yes"
-                   and (c.get("duration_in_call") or 0) < 90
-                   and c not in escalations]
-    long_calls  = sorted(
-        [c for c in eligible if c.get("answered") == "Yes" and c not in escalations and c not in short],
-        key=lambda x: x.get("duration_in_call") or 0,
-        reverse=True,
-    )
+    taken = {id(c) for c in escalations}
 
-    ordered = escalations + abandoned + short + long_calls
+    hash_counts = Counter(c.get("caller_hash") for c in eligible if c.get("caller_hash"))
+    repeat = [c for c in eligible
+              if id(c) not in taken
+              and c.get("caller_hash") and hash_counts[c.get("caller_hash")] > 1]
+    taken |= {id(c) for c in repeat}
+
+    long_calls = sorted(
+        [c for c in eligible if id(c) not in taken
+         and c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) >= 90],
+        key=lambda x: x.get("duration_in_call") or 0, reverse=True,
+    )
+    taken |= {id(c) for c in long_calls}
+
+    short = [c for c in eligible if id(c) not in taken
+             and c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 90]
+    taken |= {id(c) for c in short}
+
+    abandoned = [c for c in eligible if id(c) not in taken and c.get("answered") == "No"]
+    taken |= {id(c) for c in abandoned}
+
+    rest = sorted([c for c in eligible if id(c) not in taken],
+                  key=lambda x: x.get("started_at") or 0)
+
+    ordered = escalations + repeat + long_calls + short + abandoned + rest
     seen, unique = set(), []
     for c in ordered:
         cid = c.get("call_id_internal") or c.get("call_id")
@@ -200,7 +218,8 @@ def select_calls_for_analysis(calls: list[dict], coverage_pct: float = None, max
         log.info(f"  Cap analyse appliqué : {len(selected)} → {max_calls} appels max")
         selected = selected[:max_calls]
     log.info(f"  Sélection analyse : {len(selected)}/{len(eligible)} appels ({coverage_pct*100:.0f}%) "
-             f"[escalades={len(escalations)} abandons={len(abandoned)} courts={len(short)} longs={len(long_calls)}]")
+             f"[escalades={len(escalations)} repeat={len(repeat)} longs={len(long_calls)} "
+             f"courts={len(short)} abandons={len(abandoned)} reste={len(rest)}]")
     return selected
 
 
@@ -914,10 +933,14 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                 all_evaluations.extend(evals)
                 log.info(f"    → {len(evals)} évaluations retenues ({tier_label}, batch {idx+1}/{batch_n})")
 
+    # Chantier B.1 : on traite les tiers du PLUS risqué au moins risqué. Si le
+    # budget coupe, ce sont les appels banals (risque faible) qui partent au
+    # rattrapage 0.6 — jamais les escalades/appels problématiques. (Auparavant
+    # l'ordre faible→haut faisait sauter les escalades en premier.)
     _run_ollama_tier(
-        low_risk, "risque faible", OLLAMA_BATCH_SIZE,
-        ENABLE_CLAUDE_LOW_RISK_FALLBACK, llm_client.get_model_standard,
-        "low_risk_fallback",
+        high_risk, "haut risque", max(1, min(OLLAMA_BATCH_SIZE, 2)),
+        ENABLE_CLAUDE_HIGH_RISK_FALLBACK, llm_client.get_model_flagged,
+        "high_risk_batch",
     )
     _run_ollama_tier(
         medium_risk, "risque moyen", OLLAMA_BATCH_SIZE,
@@ -925,9 +948,9 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         "medium_risk_fallback",
     )
     _run_ollama_tier(
-        high_risk, "haut risque", max(1, min(OLLAMA_BATCH_SIZE, 2)),
-        ENABLE_CLAUDE_HIGH_RISK_FALLBACK, llm_client.get_model_flagged,
-        "high_risk_batch",
+        low_risk, "risque faible", OLLAMA_BATCH_SIZE,
+        ENABLE_CLAUDE_LOW_RISK_FALLBACK, llm_client.get_model_standard,
+        "low_risk_fallback",
     )
 
     # ── Étape 5 : Fallback Haiku garanti si 0 évaluations ────────────────────
