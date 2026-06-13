@@ -153,6 +153,39 @@ OLLAMA_TOP_P            = float(os.getenv("OLLAMA_TOP_P", "0.95"))
 OLLAMA_TOP_K            = int(os.getenv("OLLAMA_TOP_K", "64"))
 OLLAMA_ENABLE_THINKING  = os.getenv("OLLAMA_ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+# Seuil de significativité d'un score QA par scope (chantier 0.5). En dessous,
+# le post Slack affiche ⚪ + n au lieu d'un rouge/vert trompeur sur trop peu d'appels.
+SCORE_MIN_N = int(os.getenv("SCORE_MIN_N", "10"))
+
+
+def git_describe() -> str:
+    """Version du code (git describe) pour le header de run. Best-effort."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            cwd=str(BASE_DIR), capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return "unknown"
+
+
+def runtime_config_summary() -> str:
+    """Ligne unique de config effective au démarrage d'un run (chantier 0.5).
+    Rend le drift visible immédiatement (modèle, num_ctx, budget, couverture, version)."""
+    budget = DAILY_MAX_WALL_SECONDS
+    budget_txt = f"{budget // 60}min" if budget else "∞"
+    cov = f"{int(ANALYSIS_COVERAGE_PCT * 100)}%"
+    return (
+        f"modèle={OLLAMA_FIXED_MODEL} num_ctx={OLLAMA_NUM_CTX} keep_alive={OLLAMA_KEEP_ALIVE} "
+        f"budget={budget_txt} couverture_cible={cov} insight_pause={INSIGHT_PAUSE_WINDOW} "
+        f"code={git_describe()}"
+    )
+
+
 # ── Pause nocturne des jobs Insight (chantier 0.1) ───────────────────────────
 # Les jobs CSAT/Sentiment Insight (launchd toutes les 3 min) partagent le même
 # Ollama que le daily QA. Pendant le run de nuit, le 12B doit être SEUL en RAM

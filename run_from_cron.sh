@@ -195,6 +195,9 @@ if [ -n "$running_pid" ] && ps -p "$running_pid" >/dev/null 2>&1; then
 fi
 
 if [ "$MODE" = "daily" ]; then
+  # Chantier 0.5 : détecter la dérive source↔runtime AVANT le run (le script
+  # s'auto-alerte sur Slack si divergence). Non bloquant : on log et on continue.
+  bash "$PIPELINE_DIR/check_runtime_drift.sh" >> "$LOG_FILE" 2>&1 || true
   stop_benchmark_processes
 fi
 

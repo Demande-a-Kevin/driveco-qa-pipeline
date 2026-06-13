@@ -1347,6 +1347,7 @@ def _enrich_with_reused_transcripts(calls: list[dict]) -> list[dict]:
 
 def run_daily(target_date: datetime):
     log.info(f"=== ANALYSE QUOTIDIENNE — {target_date.strftime('%d/%m/%Y')} ===")
+    log.info("[run-config] %s", config.runtime_config_summary())
     # Garde-fou : valider la config de publication AVANT tout calcul. Une clé
     # requise absente (ex. .env écrasé par une modif CSAT/cockpit) doit faire
     # échouer le run en quelques secondes avec une alerte Slack, pas après des

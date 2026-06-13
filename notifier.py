@@ -102,6 +102,29 @@ def _score_text(score) -> str:
         return "n/a"
 
 
+def _score_icon_n(score, n, min_n: int | None = None) -> str:
+    """Icône statut d'un score QA en tenant compte de l'effectif n (chantier 0.5).
+    Sous le seuil de significativité, on n'affiche PAS de rouge/vert trompeur : ⚪."""
+    min_n = config.SCORE_MIN_N if min_n is None else min_n
+    try:
+        if n is None or int(n) < int(min_n):
+            return "⚪"
+    except (TypeError, ValueError):
+        return "⚪"
+    return _score_icon(score)
+
+
+def _score_text_n(score, n) -> str:
+    """Texte du score avec effectif explicite : `4.2/10 (n=4)`."""
+    base = _score_text(score)
+    try:
+        if n is not None:
+            return f"{base} (n={int(n)})"
+    except (TypeError, ValueError):
+        pass
+    return base
+
+
 def _aircall_link(call_id) -> str:
     """Retourne un lien Aircall mrkdwn pour un call_id."""
     if not call_id or str(call_id) in ("?", ""):
@@ -483,12 +506,17 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             "type": "header",
             "text": {"type": "plain_text", "text": f"📊 Analyse Appels Driveco — {label} {date_str}"},
         },
+        # ── Header de config effective (chantier 0.5 : rend le drift visible) ─
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"⚙️ {config.runtime_config_summary()}"}],
+        },
         # ── Scores QA ───────────────────────────────────────────────────────
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon(ucc_score)}\n`{_score_text(ucc_score)}`"},
-                {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon(drv_score)}\n`{_score_text(drv_score)}`"},
+                {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon_n(ucc_score, analyzed_ucc_calls)}\n`{_score_text_n(ucc_score, analyzed_ucc_calls)}`"},
+                {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon_n(drv_score, analyzed_driveco_calls)}\n`{_score_text_n(drv_score, analyzed_driveco_calls)}`"},
             ],
         },
         # ── KPIs globaux (tous périmètres confondus) ────────────────────────
