@@ -81,3 +81,6 @@ wrangler.toml.local
 *.bak
 *.tmp
 debug_*.py
+
+# Taxonomie tags : CSV source jamais committé (données métier) — seul le YAML l'est.
+*Tag_Call_reason_Mapping*.csv
