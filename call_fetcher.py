@@ -570,6 +570,23 @@ def fetch_sample_with_transcripts(calls: list[dict], max_samples: int = 10) -> l
     return enrich_with_transcripts(sample, max_with_transcript=max_samples)
 
 
+def smart_truncate_transcript(text: str | None, max_chars: int) -> str | None:
+    """Troncature intelligente (chantier 0.2) : préserve le DÉBUT (contexte, motif
+    d'appel) ET la FIN (résolution, clôture) plutôt que de couper bêtement la queue.
+    Une coupe tête-seule faisait perdre la conclusion de l'appel — pénalisant pour le
+    scoring QA (critères solution/clôture). En dessous du seuil : texte inchangé."""
+    if not text:
+        return text
+    max_chars = max(500, int(max_chars))
+    if len(text) <= max_chars:
+        return text
+    marker = "\n[… passage médian tronqué …]\n"
+    budget = max_chars - len(marker)
+    head_len = int(budget * 0.6)
+    tail_len = budget - head_len
+    return text[:head_len].rstrip() + marker + text[-tail_len:].lstrip()
+
+
 def enrich_with_transcripts(calls: list[dict], max_with_transcript: int | None = None) -> list[dict]:
     """
     Enrichit les appels avec leur transcript Aircall AI.
@@ -581,7 +598,7 @@ def enrich_with_transcripts(calls: list[dict], max_with_transcript: int | None =
     for i, call in enumerate(calls):
         if i < quota:
             raw = fetch_transcript(str(call.get("call_id", "")))
-            call["transcript"] = raw[:max(500, config.OLLAMA_TRANSCRIPT_MAX_CHARS)] if raw else None
+            call["transcript"] = smart_truncate_transcript(raw, config.OLLAMA_TRANSCRIPT_MAX_CHARS) if raw else None
         else:
             call["transcript"] = None
     return calls

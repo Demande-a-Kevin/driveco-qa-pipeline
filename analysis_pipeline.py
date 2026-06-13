@@ -677,7 +677,7 @@ def _build_call_entry(call: dict, transcript_max_chars: int = 900) -> dict:
         entry["missed"] = call.get("missed_call_reason") or "abandoned"
     if call.get("tags"):
         entry["tags"] = call["tags"]
-    t = (call.get("transcript") or "")[:transcript_max_chars]
+    t = call_fetcher.smart_truncate_transcript(call.get("transcript") or "", transcript_max_chars)
     if t:
         entry["transcript"] = t
     return entry
