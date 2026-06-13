@@ -18,7 +18,16 @@ BENCH_SAMPLE_SIZE = int(os.getenv("BENCH_SAMPLE_SIZE", "15"))
 BENCH_BATCH_SIZE = 1
 TRANSCRIPT_CANDIDATES_PER_DAY = 20
 MIN_TRANSCRIPT_LINES = 6
-MODEL_NAMES = [config.OLLAMA_FIXED_MODEL]
+# Chantier 0.4 : comparer plusieurs modèles (qualité MAE vs gold set). Configurable
+# via BENCH_MODEL_NAMES="gemma4:12b,gemma3:4b". Défaut = le modèle de prod seul.
+MODEL_NAMES = [
+    m.strip() for m in os.getenv("BENCH_MODEL_NAMES", config.OLLAMA_FIXED_MODEL).split(",") if m.strip()
+]
+# Override num_ctx pour toute la passe (mesure 13/06 : sans effet sur le débit en
+# mono-locataire ; utile pour vérifier l'impact qualité d'une fenêtre plus courte).
+_BENCH_NUM_CTX = os.getenv("BENCH_NUM_CTX", "").strip()
+if _BENCH_NUM_CTX.isdigit():
+    config.OLLAMA_NUM_CTX = int(_BENCH_NUM_CTX)
 BENCH_MODEL_TIMEOUT_SECONDS = int(os.getenv("BENCH_MODEL_TIMEOUT_SECONDS", "1800"))
 BENCH_STOP_ON_FIRST_FAILED_BATCH = os.getenv("BENCH_STOP_ON_FIRST_FAILED_BATCH", "true").strip().lower() in {"1", "true", "yes", "on"}
 BENCH_WARMUP_TIMEOUT_SECONDS = int(os.getenv("BENCH_WARMUP_TIMEOUT_SECONDS", "600"))
