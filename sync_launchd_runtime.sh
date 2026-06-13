@@ -41,6 +41,10 @@ for extra_file in .env gdrive_credentials.json gdrive_token.json; do
   fi
 done
 
+# Chantier 0.5 : fige la version du code au déploiement (le runtime n'est pas un
+# repo git) → lisible dans le header de run pour repérer tout drift de version.
+git -C "$PIPELINE_DIR" describe --tags --always --dirty > "$RUNTIME_DIR/.runtime_version" 2>/dev/null || true
+
 if [ ! -x "$RUNTIME_VENV/bin/python" ]; then
   "$PYTHON_BIN" -m venv "$RUNTIME_VENV"
 fi

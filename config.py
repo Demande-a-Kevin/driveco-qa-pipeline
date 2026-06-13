@@ -159,7 +159,8 @@ SCORE_MIN_N = int(os.getenv("SCORE_MIN_N", "10"))
 
 
 def git_describe() -> str:
-    """Version du code (git describe) pour le header de run. Best-effort."""
+    """Version du code pour le header de run. Best-effort. En runtime launchd
+    (pas un repo git), lit le fichier .runtime_version écrit par sync_launchd_runtime.sh."""
     import subprocess
     try:
         out = subprocess.run(
@@ -168,6 +169,15 @@ def git_describe() -> str:
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    # Runtime launchd : version figée au déploiement.
+    try:
+        vf = BASE_DIR / ".runtime_version"
+        if vf.exists():
+            txt = vf.read_text(encoding="utf-8").strip()
+            if txt:
+                return txt
     except Exception:  # noqa: BLE001
         pass
     return "unknown"
