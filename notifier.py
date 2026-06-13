@@ -104,6 +104,15 @@ def _score_text(score) -> str:
         return "n/a"
 
 
+def _csat_icon(avg) -> str:
+    """Icône CSAT sur 5 : 🟢 ≥4, 🟡 ≥3, 🔴 sinon, ⚪ si inconnu."""
+    try:
+        a = float(avg)
+    except (TypeError, ValueError):
+        return "⚪"
+    return "🟢" if a >= 4 else "🟡" if a >= 3 else "🔴"
+
+
 def _score_icon_n(score, n, min_n: int | None = None) -> str:
     """Icône statut d'un score QA en tenant compte de l'effectif n (chantier 0.5).
     Sous le seuil de significativité, on n'affiche PAS de rouge/vert trompeur : ⚪."""
@@ -542,6 +551,16 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
     label     = "Quotidien" if mode == "daily" else "Hebdomadaire"
     date_str  = date.strftime("%d/%m/%Y")
 
+    # CSAT du jour (x/5) — affiché dans le bloc scores principal si disponible.
+    csat_avg = kpis.get("csat_day_avg")
+    csat_n = kpis.get("csat_day_n") or 0
+    score_fields = [
+        {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon_n(ucc_score, ucc_n_eval)}\n`{_score_text_n(ucc_score, ucc_n_eval)}`"},
+        {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon_n(drv_score, drv_n_eval)}\n`{_score_text_n(drv_score, drv_n_eval)}`"},
+    ]
+    if csat_avg is not None:
+        score_fields.append({"type": "mrkdwn", "text": f"*CSAT du jour* {_csat_icon(csat_avg)}\n{csat_avg}/5 (n={csat_n})"})
+
     # KPIs globaux — labels harmonisés avec la terminologie Aircall (Inbounds,
     # Answer rate). "Answer rate" est calculé sur les appels décrochables
     # (hors call deflector et abandons IVR) — cf. metrics_builder._is_call_answerable.
@@ -597,13 +616,10 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         },
         # (La config effective n'est PAS affichée dans le post Slack — lecteurs
         # métier. Elle reste loggée côté pipeline via [run-config].)
-        # ── Scores QA ───────────────────────────────────────────────────────
+        # ── Scores QA (+ CSAT du jour si dispo) ─────────────────────────────
         {
             "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon_n(ucc_score, ucc_n_eval)}\n`{_score_text_n(ucc_score, ucc_n_eval)}`"},
-                {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon_n(drv_score, drv_n_eval)}\n`{_score_text_n(drv_score, drv_n_eval)}`"},
-            ],
+            "fields": score_fields,
         },
         # ── KPIs globaux (tous périmètres confondus) ────────────────────────
         {

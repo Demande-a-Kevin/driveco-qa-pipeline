@@ -54,6 +54,7 @@ import config
 import ops_guards
 import persistence
 import catchup_state
+import csat_daily
 import rubric as rubric_module
 import schemas
 from runtime_config import load_runtime_config
@@ -1437,6 +1438,17 @@ def run_daily(target_date: datetime):
         # Métriques globales sur TOUS les appels (avant filtre UCC)
         metrics = metrics_builder.compute_metrics(calls)
         log.info(f"  KPIs globaux : décroché={metrics.get('pickup_rate_pct')}% overflow={metrics.get('overflow_rate_pct')}%")
+
+        # CSAT du jour (x/5) — sondages Sprig rattachés aux appels du jour analysé.
+        try:
+            _call_ids = {str(c.get("call_id_internal") or c.get("call_id")) for c in calls if c.get("call_id")}
+            _csat = csat_daily.daily_csat_for_calls(target_date, _call_ids)
+            metrics["csat_day_avg"] = _csat["avg"]
+            metrics["csat_day_n"] = _csat["n"]
+            if _csat["avg"] is not None:
+                log.info(f"  CSAT du jour : {_csat['avg']}/5 (n={_csat['n']})")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[csat] CSAT du jour indisponible: %s", exc)
 
         # Alertes immédiates (pic, repeat callers)
         for alert in metrics.get("alerts", []):
