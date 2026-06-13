@@ -58,5 +58,50 @@ class CompactBuilderTest(unittest.TestCase):
             self.assertGreater(len(bw), 5)
 
 
+class SplitMainThreadTest(unittest.TestCase):
+    def test_split_main_is_before_first_divider(self):
+        blocks = [
+            {"type": "header"}, {"type": "section"},   # principal
+            {"type": "divider"},
+            {"type": "section", "k": "ivr"},
+            {"type": "divider"},
+            {"type": "section", "k": "raisons"},
+        ]
+        main, threads = notifier._split_main_and_threads(blocks, max_blocks_per_thread=14)
+        self.assertEqual(main, [{"type": "header"}, {"type": "section"}])
+        flat = [b for t in threads for b in t]
+        self.assertEqual(len(flat), 2)  # ivr + raisons en fil, sans les dividers
+        self.assertFalse(any(b.get("type") == "divider" for b in flat))
+
+    def test_packing_respects_max(self):
+        blocks = [{"type": "header"}, {"type": "divider"}]
+        for _ in range(6):
+            blocks += [{"type": "section"}, {"type": "section"}, {"type": "divider"}]
+        _, threads = notifier._split_main_and_threads(blocks, max_blocks_per_thread=5)
+        self.assertTrue(all(len(t) <= 5 for t in threads))
+        self.assertGreaterEqual(len(threads), 2)
+
+
+class DailyThreadingTest(unittest.TestCase):
+    def test_daily_posts_main_then_threads(self):
+        analysis = _analysis(actionable=[{"priority": "critical", "description": "x", "representative_call_ids": ["1"]}])
+        calls = [{"call_id": "1", "line_id": 1, "classified_type": "ucc_handled", "answered": "Yes", "duration_in_call": 120}]
+        posts = []
+
+        def fake_post(blocks, text="", channel=None, thread_ts=None):
+            posts.append({"n": len(blocks), "thread_ts": thread_ts})
+            return "1781000000.0001"
+
+        with mock.patch.object(notifier, "_slack_already_sent", return_value=False), \
+             mock.patch.object(notifier, "_mark_slack_sent"), \
+             mock.patch.object(notifier, "_post_to_slack", side_effect=fake_post):
+            notifier.send_slack_notification(analysis, "daily", datetime.datetime(2026, 6, 12),
+                                             calls=calls, ucc_calls=calls, qa_calls=calls)
+        self.assertGreaterEqual(len(posts), 1)
+        self.assertIsNone(posts[0]["thread_ts"])           # principal = pas en fil
+        for p in posts[1:]:
+            self.assertEqual(p["thread_ts"], "1781000000.0001")  # compléments en fil
+
+
 if __name__ == "__main__":
     unittest.main()

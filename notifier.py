@@ -521,10 +521,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                        calls: list[dict] = None,
                        ucc_calls: list[dict] = None,
                        qa_calls: list[dict] = None) -> list[dict]:
-    """Construit le message Slack. Aiguille vers le format compact (chantier A)
-    pour le daily si SLACK_REPORT_STYLE=compact ; l'hebdo reste toujours détaillé."""
-    if mode == "daily" and config.SLACK_REPORT_STYLE == "compact":
-        return build_slack_blocks_compact(analysis, mode, date, calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
+    """Construit les blocs Slack détaillés. Pour le daily, send_slack_notification
+    découpe ensuite en post principal + compléments en fil (chantier A v2)."""
     scores = analysis.get("scores", {})
     kpis   = analysis.get("kpis", {})
     alerts = analysis.get("alerts", [])
@@ -597,11 +595,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
             "type": "header",
             "text": {"type": "plain_text", "text": f"📊 Analyse Appels Driveco — {label} {date_str}"},
         },
-        # ── Header de config effective (chantier 0.5 : rend le drift visible) ─
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"⚙️ {config.runtime_config_summary()}"}],
-        },
+        # (La config effective n'est PAS affichée dans le post Slack — lecteurs
+        # métier. Elle reste loggée côté pipeline via [run-config].)
         # ── Scores QA ───────────────────────────────────────────────────────
         {
             "type": "section",
@@ -653,8 +648,16 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                 {"type": "mrkdwn", "text": f"*Transcripts exploitables*\n{transcript_calls if transcript_calls is not None else 'n/a'} ({transcript_rate if transcript_rate is not None else 'n/a'}%)"},
             ],
         },
-        {"type": "divider"},
     ]
+    # ── 🚨 À regarder aujourd'hui (exceptions critical/warning) — reste dans le
+    # post PRINCIPAL (avant le 1er divider) ; le détail part en thread. ──────────
+    _alert_lines = _compact_alert_lines(actionable_items, max_lines=5)
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "*🚨 À regarder aujourd'hui*\n" + (
+            "\n".join(_alert_lines) if _alert_lines else "✅ RAS — rien de critique aujourd'hui.")},
+    })
+    blocks.append({"type": "divider"})
 
     # ── Routage IVR ─────────────────────────────────────────────────────────
     ivr_scope_calls = [c for c in assistance_scope_calls if not _is_maintenance_call(c)]
@@ -922,18 +925,60 @@ def send_slack_notification(analysis: dict, mode: str, date: datetime,
 
     blocks   = build_slack_blocks(analysis, mode, date, calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
     fallback = f"Rapport {mode} Driveco {date.strftime('%d/%m/%Y')}"
-    ok = _post_to_slack(blocks, text=fallback)
-    if ok:
+
+    # Daily (chantier A v2) : post PRINCIPAL court (KPIs + lignes + à regarder),
+    # puis compléments EN FIL (routage IVR, raisons, pics, appels longs, top
+    # problématiques). L'hebdo reste un post détaillé unique.
+    if mode == "daily":
+        main_blocks, thread_groups = _split_main_and_threads(blocks)
+        ok = _post_to_slack(main_blocks, text=fallback)
+        if not ok:
+            return ok
         _mark_slack_sent("report", mode, date)
-        # Chantier 0.6 : mémorise le ts du post quotidien pour que le rattrapage
-        # poste sa complétion en FIL de discussion (pas un nouveau post à plat).
-        if mode == "daily" and isinstance(ok, str):
+        if isinstance(ok, str):
             try:
                 import catchup_state
                 catchup_state.save_daily_slack_ref(date, config.SLACK_CHANNEL_ID, ok)
             except Exception:  # noqa: BLE001
                 pass
+            for grp in thread_groups:
+                _post_to_slack(grp, text=f"Détail {date.strftime('%d/%m/%Y')}", thread_ts=ok)
+        return ok
+
+    ok = _post_to_slack(blocks, text=fallback)
+    if ok:
+        _mark_slack_sent("report", mode, date)
     return ok
+
+
+def _split_main_and_threads(blocks: list[dict], max_blocks_per_thread: int = 14):
+    """Découpe les blocs détaillés en (post principal, [messages de fil]).
+    Principal = tout ce qui précède le 1er divider (header, scores, KPIs globaux,
+    lignes Assistance/Transfert, éligibles, à regarder). Le reste est regroupé par
+    section (dividers) puis empaqueté en messages de fil lisibles."""
+    first_div = next((i for i, b in enumerate(blocks) if b.get("type") == "divider"), len(blocks))
+    main = [b for b in blocks[:first_div] if b.get("type") != "divider"]
+
+    sections, cur = [], []
+    for b in blocks[first_div:]:
+        if b.get("type") == "divider":
+            if cur:
+                sections.append(cur)
+                cur = []
+        else:
+            cur.append(b)
+    if cur:
+        sections.append(cur)
+
+    threads, msg = [], []
+    for sec in sections:
+        if msg and len(msg) + len(sec) > max_blocks_per_thread:
+            threads.append(msg)
+            msg = []
+        msg += sec
+    if msg:
+        threads.append(msg)
+    return main, threads
 
 
 def post_catchup_thread(date: datetime, text: str) -> bool:
