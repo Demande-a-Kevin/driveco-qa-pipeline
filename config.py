@@ -104,6 +104,11 @@ OLLAMA_FIXED_MODEL      = os.getenv(
 )
 OLLAMA_MODEL_SCREENING  = OLLAMA_FIXED_MODEL
 OLLAMA_MODEL_ANALYSIS   = OLLAMA_FIXED_MODEL
+# Routage hybride (direction Maui 2026-06-13) : modèle "qualité" réservé aux appels
+# à haut risque / longs (tier haut risque). Défaut = modèle primaire (donc routage
+# désactivé tant que non configuré → réversible). Mettre gemma4:12b ici + un primaire
+# léger (gemma3:4b) dans OLLAMA_FIXED_MODEL pour activer 4B-volume / 12B-problématiques.
+OLLAMA_MODEL_FLAGGED    = os.getenv("OLLAMA_MODEL_FLAGGED", OLLAMA_MODEL_ANALYSIS)
 OLLAMA_TIMEOUT          = int(os.getenv("OLLAMA_TIMEOUT", "60"))
 OLLAMA_ANALYSIS_TIMEOUT = int(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "600"))
 OLLAMA_PRESCREEN_TIMEOUT = int(
@@ -195,8 +200,11 @@ def runtime_config_summary() -> str:
     budget = DAILY_MAX_WALL_SECONDS
     budget_txt = f"{budget // 60}min" if budget else "∞"
     cov = f"{int(ANALYSIS_COVERAGE_PCT * 100)}%"
+    model_txt = OLLAMA_FIXED_MODEL
+    if OLLAMA_MODEL_FLAGGED and OLLAMA_MODEL_FLAGGED != OLLAMA_MODEL_ANALYSIS:
+        model_txt = f"{OLLAMA_FIXED_MODEL}+flagged:{OLLAMA_MODEL_FLAGGED}"
     return (
-        f"modèle={OLLAMA_FIXED_MODEL} num_ctx={OLLAMA_NUM_CTX} keep_alive={OLLAMA_KEEP_ALIVE} "
+        f"modèle={model_txt} num_ctx={OLLAMA_NUM_CTX} keep_alive={OLLAMA_KEEP_ALIVE} "
         f"budget={budget_txt} couverture_cible={cov} insight_pause={INSIGHT_PAUSE_WINDOW} "
         f"code={git_describe()}"
     )

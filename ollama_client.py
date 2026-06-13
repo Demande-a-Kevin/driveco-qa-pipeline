@@ -32,10 +32,22 @@ _SESSION.headers.update({"Content-Type": "application/json"})
 # contexte KB au moment du daily ; bump LLM_ANALYSIS_CACHE_VERSION quand la
 # KB ou les prompts changent significativement pour invalider en douceur.
 
+# Routage hybride (direction Maui 2026-06-13) : le gros du volume passe sur le
+# modèle primaire (rapide, ex. gemma3:4b), les appels à haut risque/longs sur le
+# modèle "flagged" (qualité, ex. gemma4:12b). analyze_batch pose le modèle actif
+# du tier en cours ; les tiers sont séquentiels et le modèle est constant par tier,
+# donc une simple surcharge module-level suffit (pas de course).
+_active_analysis_model: str | None = None
+
+
+def _analysis_model() -> str:
+    return _active_analysis_model or config.OLLAMA_MODEL_ANALYSIS
+
+
 def _cache_key(call: dict, kb_summary: str | None = None) -> str:
     payload = {
         "transcript": call.get("transcript") or "",
-        "model": config.OLLAMA_MODEL_ANALYSIS,
+        "model": _analysis_model(),
         "voc": bool(config.ENABLE_VOC_ANALYSIS),
         "version": getattr(config, "LLM_ANALYSIS_CACHE_VERSION", "v1"),
     }
@@ -234,7 +246,7 @@ def _validated_chat(messages: list[dict], model_class, max_tokens: int, timeout:
     last_error = None
     for attempt in range(max_attempts):
         raw = _chat(
-            model=config.OLLAMA_MODEL_ANALYSIS,
+            model=_analysis_model(),
             messages=attempt_messages,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -273,7 +285,7 @@ def _call_id_for_log(call: dict) -> str:
 
 def _payload_from_evaluation(evaluation: schemas.CallEvaluation) -> dict:
     payload = evaluation.model_dump()
-    payload["_model"] = config.OLLAMA_MODEL_ANALYSIS
+    payload["_model"] = _analysis_model()
     return payload
 
 
@@ -310,7 +322,7 @@ def _analyze_single_call_one_shot(call: dict, kb_summary: str, stats: dict | Non
         call=call,
         factual_extract=analysis.factual_extract,
         scorecard=analysis.scorecard,
-        model_name=config.OLLAMA_MODEL_ANALYSIS,
+        model_name=_analysis_model(),
         voc_extract=voc_extract,
     )
     if stats is not None:
@@ -349,7 +361,7 @@ def _analyze_single_call_legacy(call: dict, kb_summary: str, stats: dict | None 
         call=call,
         factual_extract=extraction,
         scorecard=scoring,
-        model_name=config.OLLAMA_MODEL_ANALYSIS,
+        model_name=_analysis_model(),
         voc_extract=voc_extract,
     )
     return _payload_from_evaluation(evaluation)
@@ -587,14 +599,20 @@ def pre_screen_batch(calls: list[dict]) -> dict[str, tuple[float, str]]:
 def analyze_batch(system_prompt: str, batch_calls: list[dict],
                   kb_summary: str, date_str: str,
                   batch_num: int = 1, total_batches: int = 1,
-                  stats: dict | None = None) -> list[dict]:
+                  stats: dict | None = None, model: str | None = None) -> list[dict]:
     """
     Analyse QA d'un batch d'appels via Ollama.
     Retourne une liste de call_evaluations (même format que llm_client.analyze).
     Retourne [] si Ollama indisponible — le pipeline continue avec Claude.
+
+    `model` : modèle Ollama pour ce batch (routage hybride par tier). Pose le
+    modèle actif pour toute la chaîne d'analyse (cache + _chat + métadonnée).
     """
     if not batch_calls:
         return []
+
+    global _active_analysis_model
+    _active_analysis_model = model or config.OLLAMA_MODEL_ANALYSIS
 
     batch_stats = _ensure_batch_stats(stats)
     evaluations: list[dict] = []

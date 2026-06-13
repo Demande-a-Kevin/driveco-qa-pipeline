@@ -830,11 +830,20 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
 
     ollama_up = ollama_client.is_available()
 
-    # Partition selon risk score
-    low_risk    = [c for c in calls_to_analyze if c.get("_risk_score", 5) < config.OLLAMA_RISK_THRESHOLD]
+    # Partition par tier. "Besoin qualité" (→ modèle flagged/12B en routage hybride) :
+    # risque élevé OU appel long OU escalade. Le reste va sur le modèle primaire (4B).
+    def _needs_quality(c: dict) -> bool:
+        if c.get("_risk_score", 5) >= config.HAIKU_REEVAL_THRESHOLD:
+            return True
+        if (c.get("duration_in_call") or 0) >= config.LONG_CALL_THRESHOLD_SECONDS:
+            return True
+        return "escalation" in (c.get("tags") or "").lower()
+
+    high_risk   = [c for c in calls_to_analyze if _needs_quality(c)]
+    low_risk    = [c for c in calls_to_analyze
+                   if not _needs_quality(c) and c.get("_risk_score", 5) < config.OLLAMA_RISK_THRESHOLD]
     medium_risk = [c for c in calls_to_analyze
-                   if config.OLLAMA_RISK_THRESHOLD <= c.get("_risk_score", 5) < config.HAIKU_REEVAL_THRESHOLD]
-    high_risk   = [c for c in calls_to_analyze if c.get("_risk_score", 5) >= config.HAIKU_REEVAL_THRESHOLD]
+                   if not _needs_quality(c) and config.OLLAMA_RISK_THRESHOLD <= c.get("_risk_score", 5) < config.HAIKU_REEVAL_THRESHOLD]
 
     log.info(f"  [routing] Faible={len(low_risk)} Moyen={len(medium_risk)} Élevé={len(high_risk)}")
 
@@ -882,6 +891,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
         fallback_enabled: bool,
         fallback_model_getter,
         sanitize_context: str,
+        analysis_model: str | None = None,
     ) -> None:
         if not tier_calls:
             return
@@ -889,7 +899,8 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
             log.info(f"  [routing] Ollama indisponible → appels {tier_label} ignorés ({len(tier_calls)})")
             return
         batch_n = (len(tier_calls) + batch_size - 1) // batch_size
-        log.info(f"  [Ollama] Analyse {len(tier_calls)} appels {tier_label} (batches de {batch_size}, workers={config.OLLAMA_ANALYSIS_MAX_WORKERS})...")
+        model_used = analysis_model or config.OLLAMA_MODEL_ANALYSIS
+        log.info(f"  [Ollama] Analyse {len(tier_calls)} appels {tier_label} sur {model_used} (batches de {batch_size}, workers={config.OLLAMA_ANALYSIS_MAX_WORKERS})...")
 
         def _process_batch(batch_idx: int, batch: list[dict]) -> list[dict]:
             batch_kb_summary = get_batch_kb_excerpt(batch)
@@ -899,6 +910,7 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
                 batch_num=batch_idx + 1,
                 total_batches=batch_n,
                 stats=batch_stats,
+                model=analysis_model,
             )
             if not evals and fallback_enabled:
                 log.info(f"    Ollama échoué → fallback Claude activé pour batch {tier_label} ({len(batch)} appels)")
@@ -937,20 +949,25 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
     # budget coupe, ce sont les appels banals (risque faible) qui partent au
     # rattrapage 0.6 — jamais les escalades/appels problématiques. (Auparavant
     # l'ordre faible→haut faisait sauter les escalades en premier.)
+    # Routage hybride : haut risque/longs → modèle qualité (OLLAMA_MODEL_FLAGGED,
+    # ex. 12B) ; volume banal → modèle primaire rapide (OLLAMA_MODEL_ANALYSIS, ex. 4B).
     _run_ollama_tier(
         high_risk, "haut risque", max(1, min(OLLAMA_BATCH_SIZE, 2)),
         ENABLE_CLAUDE_HIGH_RISK_FALLBACK, llm_client.get_model_flagged,
         "high_risk_batch",
+        analysis_model=config.OLLAMA_MODEL_FLAGGED,
     )
     _run_ollama_tier(
         medium_risk, "risque moyen", OLLAMA_BATCH_SIZE,
         ENABLE_CLAUDE_MEDIUM_RISK_FALLBACK, llm_client.get_model_standard,
         "medium_risk_fallback",
+        analysis_model=config.OLLAMA_MODEL_ANALYSIS,
     )
     _run_ollama_tier(
         low_risk, "risque faible", OLLAMA_BATCH_SIZE,
         ENABLE_CLAUDE_LOW_RISK_FALLBACK, llm_client.get_model_standard,
         "low_risk_fallback",
+        analysis_model=config.OLLAMA_MODEL_ANALYSIS,
     )
 
     # ── Étape 5 : Fallback Haiku garanti si 0 évaluations ────────────────────
