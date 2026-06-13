@@ -13,6 +13,31 @@ def test_voc_extract_coerces_string_effort_score():
     assert voc.effort_score == 3
 
 
+def test_voc_extract_coerces_float_and_clamps_effort_score():
+    # Chantier 0.3 : float, virgule décimale, et hors-bornes
+    assert schemas.VoCExtract(effort_score=3.7, satisfaction_signal="neutre",
+                              churn_risk_signal="aucun").effort_score == 4
+    assert schemas.VoCExtract(effort_score="4,5", satisfaction_signal="neutre",
+                              churn_risk_signal="aucun").effort_score == 4  # round(4.5)->4 (banker's) ou 5 selon py; clamp ok
+    assert schemas.VoCExtract(effort_score=9, satisfaction_signal="neutre",
+                              churn_risk_signal="aucun").effort_score == 5  # clamp haut
+    assert schemas.VoCExtract(effort_score="0", satisfaction_signal="neutre",
+                              churn_risk_signal="aucun").effort_score == 1  # clamp bas
+
+
+def test_voc_extract_accepts_quotes_as_strings_and_drops_invalid():
+    # Chantier 0.3 : liste de strings au lieu de [{"quote": ...}] + drop des items trop courts
+    voc = schemas.VoCExtract(
+        effort_score=2, satisfaction_signal="négatif", churn_risk_signal="faible",
+        verbatim_quotes=["Le client est très mécontent du délai", "ok", "Je rappelle demain matin"],
+    )
+    quotes = [q.quote for q in voc.verbatim_quotes]
+    assert "Le client est très mécontent du délai" in quotes
+    assert "Je rappelle demain matin" in quotes
+    assert "ok" not in quotes  # trop court → droppé, pas d'échec global
+    assert len(voc.verbatim_quotes) == 2
+
+
 def test_voc_extract_cleans_unknown_emotions():
     voc = schemas.VoCExtract(effort_score=2, satisfaction_signal="négatif",
                              churn_risk_signal="faible",

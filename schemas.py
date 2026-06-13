@@ -282,11 +282,43 @@ class VoCExtract(BaseModel):
     @field_validator("effort_score", mode="before")
     @classmethod
     def _coerce_effort_score(cls, value):
+        # Chantier 0.3 : tolère int, float, et strings numériques ("3", "3.0",
+        # "4,5") → arrondi puis clamp dans [1..5]. Le modèle renvoyait parfois un
+        # float ou une string hors Literal → tout l'extract sautait au fallback.
         if isinstance(value, str):
-            stripped = value.strip()
-            if stripped.isdigit():
-                return int(stripped)
-        return value
+            value = value.strip().replace(",", ".")
+        try:
+            num = round(float(value))
+        except (TypeError, ValueError):
+            return value  # non numérique → laisse Pydantic rejeter (retry/fallback)
+        return min(5, max(1, num))
+
+    @field_validator("verbatim_quotes", "best_practice_moments", mode="before")
+    @classmethod
+    def _coerce_quote_list(cls, value, info):
+        # Chantier 0.3 : accepte une liste de strings (le modèle renvoie souvent
+        # ["citation", ...] au lieu de [{"quote": "citation"}]) et droppe les items
+        # invalides (trop courts) au lieu de faire échouer TOUT l'extract.
+        if value is None:
+            return []
+        if isinstance(value, (str, dict)):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return []
+        cap = 3 if info.field_name == "best_practice_moments" else 5
+        out: list = []
+        for item in value:
+            if isinstance(item, str):
+                item = {"quote": item}
+            if not isinstance(item, dict):
+                continue
+            quote = re.sub(r"\s+", " ", str(item.get("quote") or "").strip())
+            if len(quote) < 4:
+                continue
+            out.append(item)
+            if len(out) >= cap:
+                break
+        return out
 
     @field_validator("unmet_needs", "product_ideas", "validation_warnings", mode="before")
     @classmethod
