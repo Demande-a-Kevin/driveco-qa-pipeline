@@ -434,11 +434,97 @@ def _format_transfer_summary(call: dict) -> str | None:
     return "warm transfer non confirmé"
 
 
+def _compact_alert_lines(actionable_items: list[dict], max_lines: int = 5) -> list[str]:
+    """Lignes 'à regarder' du post compact : seulement priorités critical/warning."""
+    lines: list[str] = []
+    for item in actionable_items or []:
+        pr = item.get("priority")
+        if pr not in ("critical", "warning"):
+            continue
+        icon = "🔴" if pr == "critical" else "🟡"
+        desc = (item.get("description") or item.get("label") or "").strip()
+        if not desc:
+            continue
+        ids = item.get("representative_call_ids") or item.get("call_ids") or []
+        links = " ".join(_aircall_link(c) for c in ids[:3] if c)
+        lines.append(f"{icon} {desc}" + (f" — {links}" if links else ""))
+        if len(lines) >= max_lines:
+            break
+    return lines
+
+
+def build_slack_blocks_compact(analysis: dict, mode: str, date: datetime,
+                               calls: list[dict] = None,
+                               ucc_calls: list[dict] = None,
+                               qa_calls: list[dict] = None) -> list[dict]:
+    """Post Slack 'exception-based' (chantier A) : ≤10 blocs, lisible mobile.
+    Header + config, 1 bloc KPIs (n affiché, ⚪ si n<10), 1 bloc 'à regarder'
+    (warning/critical, max 5, sinon RAS), 1 bloc liens. Le détail vit dans
+    Markdown/Notion/cockpit."""
+    scores = analysis.get("scores", {})
+    kpis   = analysis.get("kpis", {})
+    meta   = analysis.get("analysis_meta", {})
+    actionable_items = analysis.get("actionable_items") or report_formatter.build_actionable_items(analysis)
+    analysis["actionable_items"] = actionable_items
+
+    label   = "Quotidien" if mode == "daily" else "Hebdomadaire"
+    date_str = date.strftime("%d/%m/%Y")
+    ucc_score = scores.get("ucc_quality_score", "?")
+    drv_score = scores.get("driveco_care_score", "?")
+    ucc_n = scores.get("ucc_evaluated_calls")
+    drv_n = scores.get("driveco_care_evaluated_calls")
+    answer_rate = kpis.get("answer_rate_pct", kpis.get("pickup_rate_pct"))
+    abandon     = kpis.get("abandon_rate_pct")
+    escalations = kpis.get("escalations_count", 0)
+    analyzed = meta.get("analyzed_calls")
+    eligible = meta.get("eligible_calls")
+
+    # Couverture honnête : si partielle (run dégradé / rattrapage en cours).
+    coverage_note = ""
+    try:
+        if analyzed is not None and eligible and int(analyzed) < int(eligible):
+            coverage_note = f"\n_{analyzed}/{eligible} analysés — rattrapage en cours dans la journée._"
+    except (TypeError, ValueError):
+        pass
+
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📊 QA Driveco — {label} {date_str}"}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"⚙️ {config.runtime_config_summary()}"}]},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon_n(ucc_score, ucc_n)}\n`{_score_text_n(ucc_score, ucc_n)}`"},
+            {"type": "mrkdwn", "text": f"*Score Driveco* {_score_icon_n(drv_score, drv_n)}\n`{_score_text_n(drv_score, drv_n)}`"},
+            {"type": "mrkdwn", "text": f"*Answer rate* {_kpi_icon(answer_rate, 'answer_rate_pct')}\n{answer_rate if answer_rate is not None else 'n/a'}%"},
+            {"type": "mrkdwn", "text": f"*Abandon* {_kpi_icon(abandon, 'abandon_rate_pct')}\n{abandon if abandon is not None else 'n/a'}%"},
+            {"type": "mrkdwn", "text": f"*Escalades*\n{escalations}"},
+        ]},
+    ]
+    if coverage_note:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": coverage_note.strip()}]})
+
+    alert_lines = _compact_alert_lines(actionable_items, max_lines=5)
+    body = "\n".join(alert_lines) if alert_lines else "✅ RAS — rien de critique aujourd'hui."
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*🚨 À regarder aujourd'hui*\n{body}"}})
+
+    # Liens (Notion · cockpit · Markdown) — conditionnels.
+    link_parts = []
+    notion_url = analysis.get("notion_url") or meta.get("notion_url")
+    if notion_url:
+        link_parts.append(f"<{notion_url}|Notion>")
+    if config.COCKPIT_BASE_URL:
+        link_parts.append(f"<{config.COCKPIT_BASE_URL}/qa/runs|Cockpit>")
+    link_parts.append(f"Markdown : `{date.strftime('%Y-%m-%d')}_daily_report.md`")
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": " · ".join(link_parts)}]})
+    return blocks
+
+
 def build_slack_blocks(analysis: dict, mode: str, date: datetime,
                        calls: list[dict] = None,
                        ucc_calls: list[dict] = None,
                        qa_calls: list[dict] = None) -> list[dict]:
-    """Construit le message Slack enrichi avec Block Kit."""
+    """Construit le message Slack. Aiguille vers le format compact (chantier A)
+    pour le daily si SLACK_REPORT_STYLE=compact ; l'hebdo reste toujours détaillé."""
+    if mode == "daily" and config.SLACK_REPORT_STYLE == "compact":
+        return build_slack_blocks_compact(analysis, mode, date, calls=calls, ucc_calls=ucc_calls, qa_calls=qa_calls)
     scores = analysis.get("scores", {})
     kpis   = analysis.get("kpis", {})
     alerts = analysis.get("alerts", [])

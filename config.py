@@ -153,6 +153,12 @@ OLLAMA_TOP_P            = float(os.getenv("OLLAMA_TOP_P", "0.95"))
 OLLAMA_TOP_K            = int(os.getenv("OLLAMA_TOP_K", "64"))
 OLLAMA_ENABLE_THINKING  = os.getenv("OLLAMA_ENABLE_THINKING", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+# Chantier A : style du post Slack quotidien. "compact" (défaut) = exception-based,
+# ≤10 blocs (header, config, KPIs, "à regarder", liens). "full" = post historique
+# détaillé. Rollback instantané par variable. L'hebdo reste toujours en détaillé.
+SLACK_REPORT_STYLE = os.getenv("SLACK_REPORT_STYLE", "compact").strip().lower()
+# Base URL du cockpit (lien dans le post compact). Vide = lien omis.
+COCKPIT_BASE_URL = os.getenv("COCKPIT_BASE_URL", "").strip().rstrip("/")
 # Seuil de significativité d'un score QA par scope (chantier 0.5). En dessous,
 # le post Slack affiche ⚪ + n au lieu d'un rouge/vert trompeur sur trop peu d'appels.
 SCORE_MIN_N = int(os.getenv("SCORE_MIN_N", "10"))

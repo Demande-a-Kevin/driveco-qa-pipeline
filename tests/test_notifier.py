@@ -112,7 +112,10 @@ class SlackDedupFlagsTest(unittest.TestCase):
             },
         }
 
-        blocks = notifier.build_slack_blocks(analysis, "daily", self.date, calls=[])
+        # Ce test valide le builder DÉTAILLÉ (les raisons d'appel y vivent) ;
+        # le daily est compact par défaut (chantier A) → on force "full".
+        with mock.patch.object(notifier.config, "SLACK_REPORT_STYLE", "full"):
+            blocks = notifier.build_slack_blocks(analysis, "daily", self.date, calls=[])
         text = "\n".join(
             block.get("text", {}).get("text", "")
             for block in blocks
