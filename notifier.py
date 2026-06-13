@@ -52,8 +52,11 @@ _ISSUE_TYPE_LABELS = {
 }
 
 
-def _post_to_slack(blocks: list[dict], text: str = "", channel: str | None = None) -> bool:
-    """Envoie un message Slack via l'API HTTP directe (bot token). Retourne True si succès."""
+def _post_to_slack(blocks: list[dict], text: str = "", channel: str | None = None,
+                   thread_ts: str | None = None) -> bool:
+    """Envoie un message Slack via l'API HTTP directe (bot token).
+    Retourne le `ts` du message (string, truthy) si succès, True si Slack désactivé,
+    False sinon. thread_ts permet de répondre en fil (chantier 0.6 catchup)."""
     if config.DISABLE_SLACK_NOTIFICATIONS:
         print("[notifier] ℹ️  Slack désactivé par config — envoi ignoré")
         return True
@@ -63,23 +66,22 @@ def _post_to_slack(blocks: list[dict], text: str = "", channel: str | None = Non
         print("[notifier] ⚠️  SLACK_BOT_TOKEN non défini — envoi Slack ignoré")
         return False
     try:
+        body = {"channel": target_channel, "blocks": blocks, "text": text}
+        if thread_ts:
+            body["thread_ts"] = thread_ts
         resp = requests.post(
             _SLACK_API_URL,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
-            json={
-                "channel": target_channel,
-                "blocks": blocks,
-                "text": text,
-            },
+            json=body,
             timeout=15,
         )
         data = resp.json()
         if data.get("ok"):
             print(f"[notifier] ✅ Slack envoyé → #{target_channel}")
-            return True
+            return data.get("ts") or True
         else:
             print(f"[notifier] ❌ Erreur Slack : {data.get('error', 'unknown')}")
             return False
@@ -450,6 +452,9 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
 
     ucc_score = scores.get("ucc_quality_score", "?")
     drv_score = scores.get("driveco_care_score", "?")
+    # Effectif réellement évalué par scope (chantier 0.5 : ⚪+n si trop peu d'appels).
+    ucc_n_eval = scores.get("ucc_evaluated_calls")
+    drv_n_eval = scores.get("driveco_care_evaluated_calls")
     label     = "Quotidien" if mode == "daily" else "Hebdomadaire"
     date_str  = date.strftime("%d/%m/%Y")
 
@@ -515,8 +520,8 @@ def build_slack_blocks(analysis: dict, mode: str, date: datetime,
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon_n(ucc_score, analyzed_ucc_calls)}\n`{_score_text_n(ucc_score, analyzed_ucc_calls)}`"},
-                {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon_n(drv_score, analyzed_driveco_calls)}\n`{_score_text_n(drv_score, analyzed_driveco_calls)}`"},
+                {"type": "mrkdwn", "text": f"*Score UCC* {_score_icon_n(ucc_score, ucc_n_eval)}\n`{_score_text_n(ucc_score, ucc_n_eval)}`"},
+                {"type": "mrkdwn", "text": f"*Score Driveco Care* {_score_icon_n(drv_score, drv_n_eval)}\n`{_score_text_n(drv_score, drv_n_eval)}`"},
             ],
         },
         # ── KPIs globaux (tous périmètres confondus) ────────────────────────
@@ -834,7 +839,27 @@ def send_slack_notification(analysis: dict, mode: str, date: datetime,
     ok = _post_to_slack(blocks, text=fallback)
     if ok:
         _mark_slack_sent("report", mode, date)
+        # Chantier 0.6 : mémorise le ts du post quotidien pour que le rattrapage
+        # poste sa complétion en FIL de discussion (pas un nouveau post à plat).
+        if mode == "daily" and isinstance(ok, str):
+            try:
+                import catchup_state
+                catchup_state.save_daily_slack_ref(date, config.SLACK_CHANNEL_ID, ok)
+            except Exception:  # noqa: BLE001
+                pass
     return ok
+
+
+def post_catchup_thread(date: datetime, text: str) -> bool:
+    """Poste un message de complétion de couverture EN FIL du post quotidien
+    (chantier 0.6). Si la référence du post est introuvable, poste à plat en repli."""
+    import catchup_state
+    ref = catchup_state.load_daily_slack_ref(date)
+    block = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+    if ref:
+        channel, ts = ref
+        return bool(_post_to_slack(block, text=text, channel=channel, thread_ts=ts))
+    return bool(_post_to_slack(block, text=text))
 
 
 def send_alert(message: str, level: str = "warning") -> bool:

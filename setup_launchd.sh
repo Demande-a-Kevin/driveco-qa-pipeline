@@ -11,6 +11,7 @@ WATCHDOG="$RUNTIME_DIR/run_daily_watchdog.sh"
 
 BENCH_LABEL="com.kev1n.driveco.qa.benchmark"
 DAILY_LABEL="com.kev1n.driveco.qa.daily"
+CATCHUP_LABEL="com.kev1n.driveco.qa.catchup"
 WATCHDOG_LABEL="com.kev1n.driveco.qa.daily-watchdog"
 WEEKLY_LABEL="com.kev1n.driveco.qa.weekly"
 RELIABILITY_LABEL="com.kev1n.driveco.qa.reliability"
@@ -22,6 +23,7 @@ SENTIMENT_INSIGHT_LABEL="com.kev1n.driveco.sentiment-insight"
 
 BENCH_PLIST="$LAUNCH_AGENTS_DIR/${BENCH_LABEL}.plist"
 DAILY_PLIST="$LAUNCH_AGENTS_DIR/${DAILY_LABEL}.plist"
+CATCHUP_PLIST="$LAUNCH_AGENTS_DIR/${CATCHUP_LABEL}.plist"
 WATCHDOG_PLIST="$LAUNCH_AGENTS_DIR/${WATCHDOG_LABEL}.plist"
 WEEKLY_PLIST="$LAUNCH_AGENTS_DIR/${WEEKLY_LABEL}.plist"
 RELIABILITY_PLIST="$LAUNCH_AGENTS_DIR/${RELIABILITY_LABEL}.plist"
@@ -37,6 +39,11 @@ BENCH_HOUR="${BENCH_HOUR:-1}"
 BENCH_MINUTE="${BENCH_MINUTE:-30}"
 DAILY_HOUR="${DAILY_HOUR:-1}"
 DAILY_MINUTE="${DAILY_MINUTE:-0}"
+# Rattrapage (chantier 0.6) : 2 passes en journée (09:30 et 14:00).
+CATCHUP1_HOUR="${CATCHUP1_HOUR:-9}"
+CATCHUP1_MINUTE="${CATCHUP1_MINUTE:-30}"
+CATCHUP2_HOUR="${CATCHUP2_HOUR:-14}"
+CATCHUP2_MINUTE="${CATCHUP2_MINUTE:-0}"
 WATCHDOG_HOUR="${WATCHDOG_HOUR:-6}"
 WATCHDOG_MINUTE="${WATCHDOG_MINUTE:-45}"
 WEEKLY_HOUR="${WEEKLY_HOUR:-7}"
@@ -115,6 +122,47 @@ cat > "$DAILY_PLIST" <<EOF
   <string>${LOG_DIR}/launchd_daily.log</string>
   <key>StandardErrorPath</key>
   <string>${LOG_DIR}/launchd_daily.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>AbandonProcessGroup</key>
+  <true/>
+</dict>
+</plist>
+EOF
+
+cat > "$CATCHUP_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CATCHUP_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${RUNNER}</string>
+    <string>catchup</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>${CATCHUP1_HOUR}</integer>
+      <key>Minute</key>
+      <integer>${CATCHUP1_MINUTE}</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>${CATCHUP2_HOUR}</integer>
+      <key>Minute</key>
+      <integer>${CATCHUP2_MINUTE}</integer>
+    </dict>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${RUNTIME_DIR}</string>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/launchd_catchup.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/launchd_catchup.log</string>
   <key>RunAtLoad</key>
   <false/>
   <key>AbandonProcessGroup</key>
@@ -380,12 +428,13 @@ cat > "$SENTIMENT_INSIGHT_PLIST" <<EOF
 </plist>
 EOF
 
-for label in "$BENCH_LABEL" "$DAILY_LABEL" "$WATCHDOG_LABEL" "$WEEKLY_LABEL" "$RELIABILITY_LABEL" "$KB_CLUSTER_LABEL" "$KB_ARTICLES_INDEX_LABEL" "$KB_ARTICLE_GAP_LABEL" "$CSAT_INSIGHT_LABEL" "$SENTIMENT_INSIGHT_LABEL"; do
+for label in "$BENCH_LABEL" "$DAILY_LABEL" "$CATCHUP_LABEL" "$WATCHDOG_LABEL" "$WEEKLY_LABEL" "$RELIABILITY_LABEL" "$KB_CLUSTER_LABEL" "$KB_ARTICLES_INDEX_LABEL" "$KB_ARTICLE_GAP_LABEL" "$CSAT_INSIGHT_LABEL" "$SENTIMENT_INSIGHT_LABEL"; do
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
 done
 
 launchctl bootstrap "gui/$(id -u)" "$BENCH_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$DAILY_PLIST"
+launchctl bootstrap "gui/$(id -u)" "$CATCHUP_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$WATCHDOG_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$WEEKLY_PLIST"
 launchctl bootstrap "gui/$(id -u)" "$RELIABILITY_PLIST"
@@ -398,6 +447,7 @@ launchctl bootstrap "gui/$(id -u)" "$SENTIMENT_INSIGHT_PLIST"
 echo "LaunchAgents installés :"
 echo "  $BENCH_PLIST"
 echo "  $DAILY_PLIST"
+echo "  $CATCHUP_PLIST"
 echo "  $WATCHDOG_PLIST"
 echo "  $WEEKLY_PLIST"
 echo "  $RELIABILITY_PLIST"
@@ -412,6 +462,7 @@ echo ""
 echo "Horaires :"
 echo "  benchmark : ${BENCH_HOUR}:$(printf '%02d' "$BENCH_MINUTE")"
 echo "  daily     : ${DAILY_HOUR}:$(printf '%02d' "$DAILY_MINUTE")"
+echo "  catchup   : ${CATCHUP1_HOUR}:$(printf '%02d' "$CATCHUP1_MINUTE") + ${CATCHUP2_HOUR}:$(printf '%02d' "$CATCHUP2_MINUTE")"
 echo "  watchdog  : ${WATCHDOG_HOUR}:$(printf '%02d' "$WATCHDOG_MINUTE")"
 echo "  weekly    : weekday ${WEEKLY_WEEKDAY} ${WEEKLY_HOUR}:$(printf '%02d' "$WEEKLY_MINUTE")"
 echo "  reliability : weekday ${RELIABILITY_WEEKDAY} ${RELIABILITY_HOUR}:$(printf '%02d' "$RELIABILITY_MINUTE")"

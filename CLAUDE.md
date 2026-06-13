@@ -65,6 +65,7 @@ Ne jamais éditer le runtime directement sauf debug explicite.
 |-----|---------------|
 | benchmark | Tous les jours à 01:30 |
 | daily | Tous les jours à **01:00** |
+| catchup (rattrapage couverture) | Tous les jours à **09:30 et 14:00** |
 | watchdog daily | Tous les jours à 06:45 |
 | reliability | Lundi à 04:00 |
 | weekly | Lundi à **07:15** |

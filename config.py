@@ -333,6 +333,12 @@ DAILY_MAX_CALLS_ANALYZED = _optional_int_env("DAILY_MAX_CALLS_ANALYZED", None)
 # rapport dégradé avec ce qui est déjà calculé, au lieu de tenir le lock 16h et
 # de bloquer les runs suivants. None / 0 = désactivé. 5400 = 90 min.
 DAILY_MAX_WALL_SECONDS = _optional_int_env("DAILY_MAX_WALL_SECONDS", 5400)
+# Chantier 0.6 : budget propre du run de rattrapage (--mode catchup), qui tourne
+# en journée et cohabite avec les jobs insight. Défaut 120 min par passe.
+CATCHUP_MAX_WALL_SECONDS = _optional_int_env("CATCHUP_MAX_WALL_SECONDS", 7200)
+# Profondeur max du rattrapage : on reprend les pending de J-1 et J-2 (au-delà,
+# considéré comme perdu — évite d'accumuler indéfiniment).
+CATCHUP_MAX_LOOKBACK_DAYS = int(os.getenv("CATCHUP_MAX_LOOKBACK_DAYS", "2"))
 # Nombre de batches Ollama traités en parallèle (ThreadPoolExecutor).
 # 1 = comportement séquentiel historique. Gemma4 tolère 2-3 sur Mac mini.
 OLLAMA_ANALYSIS_MAX_WORKERS = max(1, int(os.getenv("OLLAMA_ANALYSIS_MAX_WORKERS", "2")))

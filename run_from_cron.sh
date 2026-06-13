@@ -24,6 +24,9 @@ case "$MODE" in
   daily)
     LOG_FILE="$LOG_DIR/cron_daily.log"
     ;;
+  catchup)
+    LOG_FILE="$LOG_DIR/cron_catchup.log"
+    ;;
   weekly)
     LOG_FILE="$LOG_DIR/cron_weekly.log"
     ;;

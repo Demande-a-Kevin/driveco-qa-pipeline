@@ -53,6 +53,7 @@ import d1_client
 import config
 import ops_guards
 import persistence
+import catchup_state
 import rubric as rubric_module
 import schemas
 from runtime_config import load_runtime_config
@@ -588,6 +589,10 @@ def build_fallback_consolidation(metrics: dict, summary: dict) -> dict:
             "driveco_care_score": driveco_care_score,
             "ucc_score_justification": ucc_score_justification,
             "driveco_score_justification": driveco_score_justification,
+            # Effectif réellement ÉVALUÉ par scope (≠ sélectionné) — pour l'affichage
+            # honnête ⚪+n du post Slack (chantier 0.5) quand le budget a coupé l'analyse.
+            "ucc_evaluated_calls": int((scope_breakdown.get("ucc") or {}).get("evaluated_calls") or 0),
+            "driveco_care_evaluated_calls": int((scope_breakdown.get("driveco") or {}).get("evaluated_calls") or 0),
         },
         "top_issues": [
             {
@@ -761,7 +766,8 @@ Réponds UNIQUEMENT avec le JSON (sans call_evaluations) :
 def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: list[dict],
                               kb_summary: str, consolidation_model: str,
                               mode: str = "daily",
-                              reuse_existing_evaluations: bool = False) -> dict:
+                              reuse_existing_evaluations: bool = False,
+                              wall_budget_seconds: int | None = None) -> dict:
     """
     Analyse calls_to_analyze via routing Ollama prioritaire :
 
@@ -834,8 +840,11 @@ def run_batched_llm_analysis(date: datetime, metrics: dict, calls_to_analyze: li
     # qui est déjà calculé, plutôt que de tenir le lock pendant des heures et de
     # bloquer les runs suivants (cause des 2 jours sans reporting).
     _analysis_deadline = None
-    if mode == "daily" and config.DAILY_MAX_WALL_SECONDS:
-        _analysis_deadline = time.monotonic() + config.DAILY_MAX_WALL_SECONDS
+    _budget = wall_budget_seconds if wall_budget_seconds is not None else (
+        config.DAILY_MAX_WALL_SECONDS if mode == "daily" else None
+    )
+    if _budget:
+        _analysis_deadline = time.monotonic() + _budget
 
     def _wall_budget_exceeded() -> bool:
         if _analysis_deadline is None or time.monotonic() <= _analysis_deadline:
@@ -1489,6 +1498,10 @@ def run_daily(target_date: datetime):
         persistence.purge_expired_verbatims()
         _persist_daily_snapshot(target_date, metrics, analysis, calls)
 
+        # Chantier 0.6 : appels sélectionnés mais NON évalués (budget coupé) →
+        # marqués pending pour le run de rattrapage (garantie couverture 100 %).
+        _persist_pending_for_catchup(target_date, calls_to_analyze, analysis)
+
         report_md = report_formatter.format_daily_report(target_date, metrics, analysis)
         title_prefix, filename_suffix = _daily_report_artifacts(target_date, analysis)
         notifier.save_report(
@@ -1518,6 +1531,87 @@ def run_daily(target_date: datetime):
         final_status = (analysis or {}).get("run_health", {}).get("status", "success")
         final_errors = int((analysis or {}).get("run_health", {}).get("rejected_calls", 0) or 0)
         _finalize_run_record(run_record, final_status, len(calls_to_analyze), analysis, errors_count=final_errors)
+
+
+# ── Rattrapage de couverture (chantier 0.6) ──────────────────────────────────
+
+def _call_uid(call: dict) -> str:
+    return str(call.get("call_id_internal") or call.get("call_id") or "")
+
+
+def _persist_pending_for_catchup(target_date: datetime, calls_to_analyze: list[dict], analysis: dict) -> None:
+    """Marque les appels sélectionnés mais NON évalués (budget coupé) en pending."""
+    analyzed = {str(ev.get("call_id")) for ev in (analysis.get("call_evaluations") or [])}
+    pending = [uid for c in calls_to_analyze if (uid := _call_uid(c)) and uid not in analyzed]
+    catchup_state.save_pending(target_date, pending)
+    if pending:
+        log.info("  [catchup] %d appel(s) non analysé(s) (budget) → pending pour rattrapage", len(pending))
+
+
+def _eligible_qa_count_for(calls: list[dict]) -> int:
+    qa = call_classifier.filter_qa_calls(calls)
+    return len([c for c in qa if not (c.get("answered") == "Yes" and (c.get("duration_in_call") or 0) < 60)])
+
+
+def run_catchup(reference_date: datetime | None = None) -> None:
+    """Reprend les appels pending (J-1..J-lookback) non analysés la nuit (budget
+    coupé), les analyse avec un budget propre, persiste, et poste la complétion EN
+    FIL du post quotidien. Garantit la couverture 100 % en différé (contrainte Maui)."""
+    ref = reference_date or datetime.now()
+    ops_guards.run_preflight_or_abort("daily", logger=log)
+    _sync_kb_if_enabled()
+    kb_summary = _kb_source().get_kb_summary_for_prompt()
+    total_recovered = 0
+    for back in range(1, config.CATCHUP_MAX_LOOKBACK_DAYS + 1):
+        day = ref - timedelta(days=back)
+        pending_ids = set(catchup_state.load_pending(day))
+        if not pending_ids:
+            continue
+        log.info("=== RATTRAPAGE — %s : %d appel(s) pending ===", day.strftime("%d/%m/%Y"), len(pending_ids))
+        log.info("[run-config] %s", config.runtime_config_summary())
+        try:
+            calls = call_fetcher.fetch_calls_for_date(day)
+            calls = call_classifier.classify_all(calls)
+            calls = call_fetcher.enrich_with_agent_identity(calls)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[catchup] fetch %s KO: %s", day.strftime("%Y-%m-%d"), exc)
+            continue
+        to_do = [c for c in calls if _call_uid(c) in pending_ids]
+        if not to_do:
+            catchup_state.save_pending(day, [])  # pending obsolètes (données purgées)
+            continue
+        run_record = _build_run_record("catchup", day)
+        persistence.save_llm_run(run_record)
+        to_do = _enrich_with_reused_transcripts(to_do)
+        persistence.persist_transcripts(to_do)
+        metrics = metrics_builder.compute_metrics(calls)
+        analysis = run_batched_llm_analysis(
+            day, metrics, to_do, kb_summary,
+            consolidation_model=llm_client.get_model_standard(),
+            mode="catchup",
+            wall_budget_seconds=config.CATCHUP_MAX_WALL_SECONDS,
+        )
+        evals = analysis.get("call_evaluations", [])
+        save_analysis_to_d1(evals)
+        persistence.persist_evaluations(to_do, evals, llm_run_id=run_record.get("id"))
+        analyzed_ids = [str(ev.get("call_id")) for ev in evals]
+        remaining = catchup_state.clear_pending(day, analyzed_ids)
+        _finalize_run_record(run_record, "success", len(evals), analysis, errors_count=0)
+        total_recovered += len(evals)
+
+        total_eligible = _eligible_qa_count_for(calls)
+        analyzed_now = max(0, total_eligible - len(remaining))
+        now_txt = datetime.now().strftime("%H:%M")
+        if remaining:
+            msg = (f"🔄 *Rattrapage QA {day.strftime('%d/%m/%Y')}* : +{len(evals)} appels analysés "
+                   f"({analyzed_now}/{total_eligible}). Reliquat {len(remaining)} — prochaine passe.")
+        else:
+            msg = (f"✅ *Couverture complétée {day.strftime('%d/%m/%Y')}* : {analyzed_now}/{total_eligible} "
+                   f"(rattrapage de {len(evals)} appels à {now_txt}).")
+        notifier.post_catchup_thread(day, msg)
+        log.info("  [catchup] %s : +%d évals, reliquat %d", day.strftime("%Y-%m-%d"), len(evals), len(remaining))
+    if total_recovered == 0:
+        log.info("[catchup] aucun appel pending à rattraper.")
 
 
 def run_weekly(end_date: datetime):
@@ -1842,7 +1936,7 @@ def run_test():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline QA Driveco")
-    parser.add_argument("--mode", choices=["daily", "weekly", "reliability", "test", "kb_cluster", "kb_articles_index", "kb_article_gap"], default="test")
+    parser.add_argument("--mode", choices=["daily", "catchup", "weekly", "reliability", "test", "kb_cluster", "kb_articles_index", "kb_article_gap"], default="test")
     parser.add_argument("--date", default=None,
                         help="Date cible YYYY-MM-DD (défaut : hier pour daily, lundi dernier pour weekly)")
     args = parser.parse_args()
@@ -1875,6 +1969,10 @@ if __name__ == "__main__":
 
         if args.mode == "daily":
             run_daily(target)
+        elif args.mode == "catchup":
+            # Référence = aujourd'hui (le rattrapage remonte J-1..J-lookback) ;
+            # --date force une référence précise pour rejouer un rattrapage.
+            run_catchup(datetime.strptime(args.date, "%Y-%m-%d") if args.date else None)
         elif args.mode == "weekly":
             run_weekly(target)
         elif args.mode == "reliability":
